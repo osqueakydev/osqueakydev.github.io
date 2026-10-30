@@ -1,5 +1,0 @@
-    next week goals 
-* physics collision 
-* create generic shape class
-* rendering class
-% item component setup
