@@ -1,0 +1,85 @@
+# ==========================================================
+# Engine todo list - shown by:   /display todoList
+#
+# Each item:
+#   text:      what to do                       (required)
+#   done:      true / false                     (default false)
+#   note:      optional smaller line of detail
+#   priority:  high | med | low                 (optional coloured dot)
+#   items:     optional sub-tasks (same shape)
+#
+# Clicking a check box in the game remembers the change in your
+# browser. To write the changes back into THIS file use
+# "Export YAML" (or /todo export) and replace the file.
+# Running from file://?  Run:  node tools/syncDevFiles.js
+# ==========================================================
+title: MALE Engine - Todo List
+
+sections:
+  - name: Collision & Physics
+    items:
+      - text: Collision Exclusion Rules
+        note: add anti-collision list for solid objects (to avoid solid collision with those objects)
+      - text: Collisional and Slope Physics 
+        note: Collision resolutions and proper slope mechanics
+        done: true
+      - text: Triangle on triangle collision doesn't work
+        priority: high
+      - text: Ghost object collision
+        note: ghost objects shouldn't affect other objects (especially velocity)
+        done: true
+      - text: High Velocity Collision
+        note: ray-casting to detect collision as high velocities
+      - text: Object collision with point method
+      - text: Object jumping off another
+        note: every other jump gets nullified when on top of a pushable object; proplem has something todo with 
+      
+  - name: Input Handlers
+    items: 
+      - text: getInput functions
+        note: these functions only seem to work within object scripts and not in scene scripts
+
+  - name: Systems
+    items:
+      - text: getInput method has broken
+        note: added helper functions to key objects, now getInput doesnt work.... idk y :sob:
+      - text: Scene and UI rendering
+        done: true
+        note: scene rendering of UI objects uses a 'priority' but should be built in. There should be a 'UI button' and a 'gameObject button' 
+      - text: genericShape class
+        note: copy of hitbox but only rendering information, seprate rendering list in gameObject
+      - text: UI class mouse real and world position
+        note: UI objects dont have camera linking option (are linked to camera by default) but dont use mouse's real position (raw X and Y)
+      - text: Camera Object Tracking
+        note: method to link camrea position to camera
+      - text: World Systems
+        items:
+          - text: Grid Size Parameters 
+            note: parameters to change world grid coordinates (parameters:{20, 20}; [x:1,y:2] = 20, 40)
+            priority: high 
+          - text: Version Control
+            note: control the engine's version with a parameter
+          - text: Default Scene
+            note: user login UI and game id selection 
+            priority: high 
+        priority: high 
+      - text: Github pages Website 
+        done: true
+        notes: get online
+        priority: high 
+      - text: Create/Find Database host
+        priority: high 
+
+  - name: Debug Tools
+    items:
+      - text: Debug console opened with a shortcut (` key)
+        done: true
+      - text: "/display todoList with clickable check boxes"
+        done: true
+
+  - name: At the very end
+    items:
+      - text: Add dataManager.js to convert game data to / from a data file (.dat, .json, .txt)
+      - text: Export the project so it runs from a local file
+      - text: Turn the project into a library for easier reuse
+      - text: Create a demo game to showcase the engine

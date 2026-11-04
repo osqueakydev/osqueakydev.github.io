@@ -1,0 +1,55 @@
+Todo List:
+  [9/2/26]
+  * create input reader function for global input usage 
+    */ circular collision ARC tracking and calculations need to be added to circular hitboxes
+  * create UI class; currently isn't valid with the scene rendering system 
+  * Fix camera systems (doesnt track objects or work properly)
+    */ Add to player class
+  * Make AI seprate rendering functions to a subclass of geometryObject named 'genericShape'
+    class will hold basic rendering data aswell as methods of movement and editting
+    #aka: gameObjects without hitboxes and collision data : 
+  !# new class chain: [Text, Transform, shell] 
+    {= foundation objects used} -> geometryObject -> 
+    [genericShape, Hitbox, gameObject, UI] -> [Entity, Player, Enemy, ect...]
+    {= super classes of objects used} 
+    
+
+  * Make world generation system have grid size input: making object coords 
+    equal to the amount of grids. 
+    EX: gridSize = 20, transform.position = {x:2,y:2} equal to 40x , 40y
+  
+  *! Collision should resolve based on the previous position of the object
+    correcting it in the direction it last came from. Objects can be set inside
+    eachother
+    Collision for triangle on triangle doesnt work. 
+    Add a 'resolve' collision condition in collision settings for gameObjects:
+      determines if 2 objects should resolve collisions
+
+  
+  * Collision system needs to correct objects partially stuck inside of another
+    also add slope climbing and falling (directional physics)
+    also add tolerances to the corners of the objects (shorten the sides of rigid objects
+      :[rect, triangle])
+  * Fix triangle collision resolution gap (bottom left) [idk either gng] 
+
+  * Create collision tester for an object and a position (position being an object of only x, y)
+  
+  * Create new class 'Entity' that can be "programmed" (given simple instructions)
+    to follow (NPC AI) for objects. Entitis can move/do something on their own 
+  
+  <Final Updates/Changes to make (at the end of EVERYTHING)>
+  * i want there to be an option in the World class 'init' function for there to make the world
+  tile-able or have gameObjects positions based on tile coordinates. SO if the world tile size 
+  is 20, the position of an object at (2,2) is actually (40, 40)
+  * make a new dataManager.js file that helps convert relavent and needed game data 
+  to a data file (file of any kind, .dat, .json, .txt) and load said file into the world/game
+  
+
+  @<Finalization>
+  ! Export project to file: make operational from local file
+  ! Create/Turn Project into a library system for easier replicational use
+  ! Create Demo Game to Showcase
+
+
+
+colorText(`\\red|X: ${World.mouse.x}|\n\\blue|Y: ${World.mouse.y}| \n tick:${World.tick} sec:${pad(World.time,1,1)}\n${type} \n${World.getPing()}`,40,40);
