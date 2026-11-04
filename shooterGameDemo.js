@@ -386,7 +386,7 @@ const enemyTypes = [
                     }
                 });
             }
-            //_move(self);
+            _move(self);
             
         });
         levelMap[currentLevel].enemys.list.push(e);
