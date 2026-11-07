@@ -8,12 +8,12 @@ function setup() {
 
 const bullets = [];
 class Gun {
-    constructor(damage,range,velocity,firerate,fireType,burst,burstTime,reloadTime,mag,ammo,a){
+    constructor(name,damage,range,velocity,firerate,fireType,burst,burstTime,reloadTime,mag,ammo,a){
         this.damage = damage;
         this.range = range;
         this.velocity = velocity;
         this.firerate = firerate; //seconds (times weapon can fire)
-        
+        this.id = name;
         this.fireType = fireType; //1,2,3 [1: semiauto, 2: fullauto, 3: burst]
         //burst weapon stats
         this.burst = burst; //bullet per burst (3)
@@ -25,6 +25,12 @@ class Gun {
         this.reloading = false;
         this.togglingFire = false;
         this.canShoot = true;
+
+        this._previousFireType = 0;
+        this._canBurst = true;
+        this._burst = 0;
+        this._burstToggle = false; //burst is 'semi auto' or has to recieve new input for each fire
+
         this.original = {
             damage,
             range,
@@ -53,130 +59,7 @@ class Gun {
             width:a.x,
             height:a.y,
         };
-        this.shoot = throttle(()=>{
-            if(this._mag <= 0 || !this.canShoot)return;
-            const _p = player.position(true);
-            const angle = findSlope(_p.x,_p.y,
-                player.ignoreCamera ? mouse.rawX : mouse.x,
-                player.ignoreCamera ? mouse.rawY : mouse.y);
-            var bullet = new gameObject(_p.x+25*-Math.cos(angle),_p.y+25*-Math.sin(angle),this.size.width,this.size.height,'play');
-            bullet.processCollisions();
-            Scene.getActiveScene().objects.forEach(s => {
-                if(s.id != bullet.id){
-                    if(bullet.collidesAtPoint(s.x,s.y,5)){
-                        
-                        if(s instanceof Player){
-                            s.applyDamage(this.damage * gameSettings.friendlyDamage);
-                        }else if(s instanceof Entity){
-                            if(s.applyDamage)s.applyDamage(this.damage);
-                            else s.health -= this.damage;
-                        }
-                        //console.log('premature collision');
-                        bullet.delete();
-                    }
-                }
-            });
-            
-            bullet.ignoreCamera = player.ignoreCamera;
-            if(this.fireType != 3)this._mag -= 1;
-            bullet.massArea = false;
-            bullet.mass = this.velocity/8;
-            //bullet.rendering.debug.active = true;
-            bullet.physicsToggles.gravity = true;
-            bullet.collision.solid = false;
-            bullet.startPosition = player.position();
-            
-            bullet.totalDist = 0;
-            //bullet's independent script to deal damage and delete itself
-            
-            bullet.scripts.push((self)=>{
-                self.ignoreCamera = player.ignoreCamera;
-                const _bi = bullets.indexOf(self);
-                self.processCollisions();
-
-                const prv = self.previousPosition;
-                const pos = self.position();
-                const vel = self.velocity();
-                const srt = self.startPosition;
-                let d = dist(
-                    srt.x+vel.x/world.tickLength,
-                    srt.y+vel.y/world.tickLength,
-                    prv.x-vel.x/world.tickLength,
-                    prv.y-vel.y/world.tickLength);
-                self.totalDist += d;
-                self.startPosition = self.position();
-                let div = this.range/self.totalDist;
-                /*
-                    limit(600/625 <= 1 ? 20*Math.pow(600/625,1.25) : 20, 2, 20)
-                */
-                let dmg = limit(
-                    div <= 1 ? 
-                    this.damage*Math.pow(this.range/self.totalDist,1.25) : 
-                    this.damage, this.damage/10, this.damage);
-                
-                
-                updateRotationSmooth(self,world.tickToSeconds(1),10000);
-                //all objects colliding with this bullet
-                const collisions = self.collisions.map(e => e.other);
-                //all bullet objects that exist
-                const bulletSet = new Set(bullets.filter(e => e!=self && !e.deleted));
-                // const cont = bullets.filter(e => !e.deleted);
-                // cont.forEach(e => {
-                //     e.collisions.forEach(y => collisions.push(y));
-                // });
-                // if(!world.camera.isHitboxVisible(self.hitbox[0])){
-                //     self.delete();
-                // }
-                const bounds = world.camera.getBounds(100);
-                if( self.x < bounds.left || self.x > bounds.right || self.y > bounds.bottom){
-                    self.delete();
-                    //console.log('despawned');
-                }
-                if(!Object.values(self.collision.sides).some(e => e))return;
-                //const cont = bullets.filter(e => !e.deleted).some(b => !self.collisions.forEach(e => e.other == b));
-                
-                if(collisions.some(e => bulletSet.has(e))){
-                    //console.log('other bullet collision');
-                    return;
-                }
-                // else if(collisions.some(e => e==player)){
-                //     //console.log('player*');
-                //     return;
-                // }
-                else if(gameSettings.friendlyFire && collisions.some(e => e==player) && self.totalDist > 300){
-                    
-                    //console.log(`you hurt youre self.... some how...`);
-                    player.applyDamage(dmg * gameSettings.friendlyDamage);
-                    self.delete();
-                    return;
-                }else if(collisions.some(e => e==player) && !gameSettings.friendlyFire){
-                    //console.log('you hit youre self... nice');
-                    return;
-                }
-                
-                var terminate = false;
-                
-                self.collisions.forEach(t => {
-                    if(t.other.health && !terminate){
-                        if(!t.other.applyDamage)t.health -= dmg;
-                        else t.other.applyDamage(dmg);
-                        terminate = true;
-                    }
-                    //else console.log('hit inanimate object');
-                });
-                self.delete();
-                bullets[_bi] = self;
-            });
-
-            bullet.transform.rotation = (angle);
-            bullet.setVelocity(this.velocity,angle-Math.PI);
-            bullets.push(bullet);
-            this.canShoot = false;
-            setTimeout(()=>{
-                if(this.fireType!=1)this.canShoot = true;
-            },1/this.firerate)
-            return true;
-        },1/this.firerate);
+        
 
         this.reload = throttle(()=>{
             
@@ -199,7 +82,285 @@ class Gun {
             }, this.reloadTime*1000);
         },this.reloadTime);
     }
-    
+    update(){
+        if(this.fireType != this._previousFireType){
+            if(this.fireType != 3){
+                var _time = (this.original.fireType == 3 ? this.burst/this.burstTime/5 : 1);
+                console.log(1000/(this.firerate * _time));
+                this.shoot = throttle(()=>{
+                    if(this._mag <= 0 || !this.canShoot)return;
+                    const _p = player.position(true);
+                    const angle = findSlope(_p.x,_p.y,
+                        player.ignoreCamera ? mouse.rawX : mouse.x,
+                        player.ignoreCamera ? mouse.rawY : mouse.y);
+                    var bullet = new gameObject(_p.x+25*-Math.cos(angle),_p.y+25*-Math.sin(angle),this.size.width,this.size.height,'play');
+                    bullet.processCollisions();
+                    Scene.getActiveScene().objects.forEach(s => {
+                        if(s.id != bullet.id){
+                            if(bullet.collidesAtPoint(s.x,s.y,5)){
+                                
+                                if(s instanceof Player){
+                                    //s.applyDamage(this.damage * gameSettings.friendlyDamage);
+                                }else if(s instanceof Entity){
+                                    if(s.applyDamage)s.applyDamage(this.damage);
+                                    else s.health -= this.damage;
+                                    bullet.delete();
+                                }
+                                //console.log('premature collision');
+                                
+                            }
+                        }
+                    });
+                    
+                    bullet.ignoreCamera = player.ignoreCamera;
+                    if(this.fireType != 3)this._mag -= 1;
+                    bullet.massArea = false;
+                    bullet.mass = this.velocity/8;
+                    //bullet.rendering.debug.active = true;
+                    bullet.physicsToggles.gravity = true;
+                    bullet.collision.solid = false;
+                    bullet.startPosition = player.position();
+                    
+                    bullet.totalDist = 0;
+                    //bullet's independent script to deal damage and delete itself
+                    
+                    bullet.scripts.push((self)=>{
+                        self.ignoreCamera = player.ignoreCamera;
+                        const _bi = bullets.indexOf(self);
+                        self.processCollisions();
+
+                        const prv = self.previousPosition;
+                        const pos = self.position();
+                        const vel = self.velocity();
+                        const srt = self.startPosition;
+                        let d = dist(
+                            srt.x+vel.x/world.tickLength,
+                            srt.y+vel.y/world.tickLength,
+                            prv.x-vel.x/world.tickLength,
+                            prv.y-vel.y/world.tickLength);
+                        self.totalDist += d;
+                        self.startPosition = self.position();
+                        let div = this.range/self.totalDist;
+                        /*
+                            limit(600/625 <= 1 ? 20*Math.pow(600/625,1.25) : 20, 2, 20)
+                        */
+                        let dmg = limit(
+                            div <= 1 ? 
+                            this.damage*Math.pow(this.range/self.totalDist,1.25) : 
+                            this.damage, this.damage/10, this.damage);
+                        
+                        
+                        updateRotationSmooth(self,world.tickToSeconds(1),10000);
+                        //all objects colliding with this bullet
+                        const collisions = self.collisions.map(e => e.other);
+                        //all bullet objects that exist
+                        const bulletSet = new Set(bullets.filter(e => e!=self && !e.deleted));
+                        // const cont = bullets.filter(e => !e.deleted);
+                        // cont.forEach(e => {
+                        //     e.collisions.forEach(y => collisions.push(y));
+                        // });
+                        // if(!world.camera.isHitboxVisible(self.hitbox[0])){
+                        //     self.delete();
+                        // }
+                        const bounds = world.camera.getBounds(100);
+                        if( self.x < bounds.left || self.x > bounds.right || self.y > bounds.bottom){
+                            self.delete();
+                            //console.log('despawned');
+                        }
+                        if(!Object.values(self.collision.sides).some(e => e))return;
+                        //const cont = bullets.filter(e => !e.deleted).some(b => !self.collisions.forEach(e => e.other == b));
+                        
+                        if(collisions.some(e => bulletSet.has(e))){
+                            //console.log('other bullet collision');
+                            return;
+                        }
+                        // else if(collisions.some(e => e==player)){
+                        //     //console.log('player*');
+                        //     return;
+                        // }
+                        else if(gameSettings.friendlyFire && collisions.some(e => e==player) && self.totalDist > 300){
+                            
+                            //console.log(`you hurt youre self.... some how...`);
+                            player.applyDamage(dmg * gameSettings.friendlyDamage);
+                            self.delete();
+                            return;
+                        }else if(collisions.some(e => e==player) && !gameSettings.friendlyFire){
+                            //console.log('you hit youre self... nice');
+                            return;
+                        }
+                        
+                        var terminate = false;
+                        
+                        self.collisions.forEach(t => {
+                            if(t.other.health && !terminate){
+                                if(!t.other.applyDamage)t.health -= dmg;
+                                else t.other.applyDamage(dmg);
+                                terminate = true;
+                            }
+                            //else console.log('hit inanimate object');
+                        });
+                        self.delete();
+                        bullets[_bi] = self;
+                    });
+
+                    bullet.transform.rotation = (angle);
+                    bullet.setVelocity(this.velocity,angle-Math.PI);
+                    bullets.push(bullet);
+                    this.canShoot = false;
+                    setTimeout(()=>{
+                        if(this.fireType!=1)this.canShoot = true;
+                    },1/_time);
+                    return true;
+                },1/(this.firerate * _time));
+                this._previousFireType = this.fireType;
+            }else{
+                var shoot = burstThrottle(()=>{
+                    if(this._mag <= 0 || this._burst > this.burst)return;
+                    if(this._burst <= 0){
+                        setTimeout(() => {
+                            if(!this._burstToggle)this.canShoot = true;
+                            this._canBurst = true;
+                            this._burst = 0;
+                        }, 1000/(this.firerate*this.burst));
+                    }
+                    const _p = player.position(true);
+                    const angle = findSlope(_p.x,_p.y,
+                        player.ignoreCamera ? mouse.rawX : mouse.x,
+                        player.ignoreCamera ? mouse.rawY : mouse.y);
+                    var bullet = new gameObject(_p.x+25*-Math.cos(angle),_p.y+25*-Math.sin(angle),this.size.width,this.size.height,'play');
+                    bullet.processCollisions();
+                    Scene.getActiveScene().objects.forEach(s => {
+                        if(s.id != bullet.id){
+                            if(bullet.collidesAtPoint(s.x,s.y,5)){
+                                
+                                if(s instanceof Player){
+                                    //s.applyDamage(this.damage * gameSettings.friendlyDamage);
+                                }else if(s instanceof Entity){
+                                    if(s.applyDamage)s.applyDamage(this.damage);
+                                    else s.health -= this.damage;
+                                    bullet.delete();
+                                }
+                                //console.log('premature collision');
+                                
+                            }
+                        }
+                    });
+                    
+                    bullet.ignoreCamera = player.ignoreCamera;
+                    this._mag -= 1;
+                    bullet.massArea = false;
+                    bullet.mass = this.velocity/8;
+                    //bullet.rendering.debug.active = true;
+                    bullet.physicsToggles.gravity = true;
+                    bullet.collision.solid = false;
+                    bullet.startPosition = player.position();
+                    
+                    bullet.totalDist = 0;
+                    //bullet's independent script to deal damage and delete itself
+                    
+                    bullet.scripts.push((self)=>{
+                        self.ignoreCamera = player.ignoreCamera;
+                        const _bi = bullets.indexOf(self);
+                        self.processCollisions();
+
+                        const prv = self.previousPosition;
+                        const pos = self.position();
+                        const vel = self.velocity();
+                        const srt = self.startPosition;
+                        let d = dist(
+                            srt.x+vel.x/world.tickLength,
+                            srt.y+vel.y/world.tickLength,
+                            prv.x-vel.x/world.tickLength,
+                            prv.y-vel.y/world.tickLength);
+                        self.totalDist += d;
+                        self.startPosition = self.position();
+                        let div = this.range/self.totalDist;
+                        /*
+                            limit(600/625 <= 1 ? 20*Math.pow(600/625,1.25) : 20, 2, 20)
+                        */
+                        let dmg = limit(
+                            div <= 1 ? 
+                            this.damage*Math.pow(this.range/self.totalDist,1.25) : 
+                            this.damage, this.damage/10, this.damage);
+                        
+                        
+                        updateRotationSmooth(self,world.tickToSeconds(1),10000);
+                        //all objects colliding with this bullet
+                        const collisions = self.collisions.map(e => e.other);
+                        //all bullet objects that exist
+                        const bulletSet = new Set(bullets.filter(e => e!=self && !e.deleted));
+                        // const cont = bullets.filter(e => !e.deleted);
+                        // cont.forEach(e => {
+                        //     e.collisions.forEach(y => collisions.push(y));
+                        // });
+                        // if(!world.camera.isHitboxVisible(self.hitbox[0])){
+                        //     self.delete();
+                        // }
+                        const bounds = world.camera.getBounds(100);
+                        if( self.x < bounds.left || self.x > bounds.right || self.y > bounds.bottom){
+                            self.delete();
+                            //console.log('despawned');
+                        }
+                        if(!Object.values(self.collision.sides).some(e => e))return;
+                        //const cont = bullets.filter(e => !e.deleted).some(b => !self.collisions.forEach(e => e.other == b));
+                        
+                        if(collisions.some(e => bulletSet.has(e))){
+                            //console.log('other bullet collision');
+                            return;
+                        }
+                        // else if(collisions.some(e => e==player)){
+                        //     //console.log('player*');
+                        //     return;
+                        // }
+                        else if(gameSettings.friendlyFire && collisions.some(e => e==player) && self.totalDist > 300){
+                            
+                            //console.log(`you hurt youre self.... some how...`);
+                            player.applyDamage(dmg * gameSettings.friendlyDamage);
+                            self.delete();
+                            return;
+                        }else if(collisions.some(e => e==player) && !gameSettings.friendlyFire){
+                            //console.log('you hit youre self... nice');
+                            return;
+                        }
+                        
+                        var terminate = false;
+                        
+                        self.collisions.forEach(t => {
+                            if(t.other.health && !terminate){
+                                if(!t.other.applyDamage)t.health -= dmg;
+                                else t.other.applyDamage(dmg);
+                                terminate = true;
+                            }
+                            //else console.log('hit inanimate object');
+                        });
+                        self.delete();
+                        bullets[_bi] = self;
+                    });
+
+                    bullet.transform.rotation = (angle);
+                    bullet.setVelocity(this.velocity,angle-Math.PI);
+                    bullets.push(bullet);
+                    this.canShoot = false;
+                    this._canBurst = false;
+                    this._burst ++;
+                    // setTimeout(()=>{
+                    //     this._canBurst = true;
+                    // },this.burstTime*1000);
+                    return true;
+                },1/(this.firerate*this.burst),this.burst,this.burstTime);
+                this.shoot = function(){
+                    
+                    if(this.canShoot && this._canBurst && this._burst < this.burst){
+                        shoot();
+                        
+                        
+                    }
+                    
+                }
+                this._previousFireType = this.fireType;
+            }
+        }
+    }
     getMode(){
         switch(this.fireType){
             case 1:return 'Semi Auto';
@@ -228,6 +389,7 @@ class Gun {
                     break;
                     case 1:
                         this.fireType = this.original.fireType;
+                        this.canShoot = true;
                     break;
                 }
                 setTimeout(()=>{
@@ -295,7 +457,7 @@ class Gun {
 const ammoTypes = {
     '5.56':{y:7,x:12},
     '7.76':{y:7,x:16},
-    '9mm':{y:4,x:8},
+    '9mm':{y:6,x:8},
     '50cal':{y:8,x:22},
 };
 
@@ -319,16 +481,14 @@ const levelMap = [
             let left = this.enemys.list.filter(e => !e.deleted).length;
             return percent ? (left)/total : (left);
         },
-        ammo:{
-            1:15, //enemyLevel:ammoCount
-        },
+        ammo:[15], //ammo per enemy level
         completed:false,
         started:false,
     }
 ];
 
 const enemyTypes = [
-    (x,y,w,h)=>{
+    (x,y,w,h,lvl)=>{
         let e = new Entity(x,y,w,h,'l1e','play');
         e.setGravityObject();
         e.tags.push('enemy');
@@ -360,7 +520,10 @@ const enemyTypes = [
             self.velocity('set',limit(vel.x,-self.speed.max,self.speed.max),vel.y);
         }
         e.scripts.push((self)=>{
-            if(self.health <= 0)self.delete();
+            if(self.health <= 0){
+                player.weapon.ammo += levelMap[currentLevel].ammo[lvl];
+                self.delete();
+            }
             const pos = self.position();
             const vel = self.velocity();
             
@@ -377,15 +540,15 @@ const enemyTypes = [
             var collisions = self.collisions.length > 0 ?
                 self.collisions.map(e => e.other) : self.collisions;
             
-            if(collisions.length > 0){
-                collisions.forEach(c => {
-                    if(!(c instanceof Entity) && !c.tags.includes('enemy')){
+            // if(collisions.length > 0){
+            //     collisions.forEach(c => {
+            //         if(!(c instanceof Entity) && !c.tags.includes('enemy')){
                         
-                    }else{
-                        self.velocity('set',0,vel.y);
-                    }
-                });
-            }
+            //         }else{
+            //             self.velocity('set',0,vel.y);
+            //         }
+            //     });
+            // }
             _move(self);
             
         });
@@ -395,12 +558,13 @@ const enemyTypes = [
 
 function waveStart(){
     const level = levelMap[currentLevel];
+    if(level == undefined)return;
     if(!level.started){
         level.enemys.spawn.forEach(num => {
             const lvl = level.enemys.spawn.indexOf(num);
             if(num<=0)return;
             for(let e = 0;e<num;e++){
-                let enemy = enemyTypes[lvl](randomNumber(-2000,2000),600,15,25);
+                let enemy = enemyTypes[lvl](randomNumber(-2000,2000),600,15,25,lvl);
             }
             level.enemys.list.forEach(e => {
                 player.collision.excluded.push(e);
@@ -409,17 +573,23 @@ function waveStart(){
         });
         
         level.started = true;
+    }else{
+        if(level.remaining() <= 0)currentLevel+=1;
     }
 }
 
 const gameSettings = {
-    friendlyFire:true,
+    friendlyFire:false,
     friendlyDamage:1, //percent
 };
 
 const arsonal = {
     //damage,range,velocity,firerate,fireType,burst,burstTime,reloadTime,mag,ammo,a
-    m4:new Gun(20,600,150,20,2,1,1,3.5,30,120,ammoTypes['5.56']),
+    m4:new Gun('m4',20,600,150,16,2,1,1,3.5,30,120,ammoTypes['5.56']),
+    //damage,range,velocity,firerate (bursts per second),burst,burstTime,reloadTime,amg,ammo,a
+    m16:new Gun('m16',14,850,100,0.85,3,3,0.05,3.25,24,24*5,ammoTypes['5.56']),
+    
+    mp5:new Gun('mp5',9,400,200,22,2,1,1,2.75,35,35*6,ammoTypes['9mm']),
 };
 
 
@@ -448,6 +618,16 @@ const player = new Player(200,200, 20,30,'player1','play');
 player.physicsToggles.friction = true;
 player.rendering.color = '#23b306';
 player.setGravityObject();
+
+player.addHitbox('rect',0,0,player.size().x+25,15);
+player.hitbox[1].rendering.color = 'rgba(0,0,0,0)';
+player.hitbox[1].rendering.visible = false;
+player.hitbox[1].rendering.outline = [1,'red'];
+player.hitbox[1].collision.resolve = false;
+player.hitbox[1].collision.pushable = false;
+player.hitbox[1].collision.solid = false;
+
+
 player.speed = {
     max:10,
     shift:5,
@@ -459,10 +639,10 @@ player.sprint = {
     charge:5, // charge X per second
 };
 player.package(Entity.Packages.living());
-player.weapon = arsonal.m4;
+player.weapon = arsonal.mp5;
 
 player.melee = {
-    range:player.size().x,
+    range:20,
     damage:40,
     cooldown:1.5,
     targets:5,
@@ -473,6 +653,7 @@ player.melee = {
 };
 
 const meleeAttack = throttle(()=>{
+    
     var targets = 0;
     player.melee.display.end = player.melee.cooldown*100;
     let now = 0;
@@ -486,7 +667,7 @@ const meleeAttack = throttle(()=>{
         
         if(targets < player.melee.targets)
         if(o.tags.includes('enemy')){
-            if(o.hitbox[0].collidesWith(player.hitbox[0],player.melee.range/2)){
+            if(o.hitbox[0].collidesWith(player.hitbox[1])){
                 if(o.applyDamage)o.applyDamage(player.melee.damage);
                 else o.health -= player.melee.damage;
                 targets++;
@@ -497,13 +678,32 @@ const meleeAttack = throttle(()=>{
 
 
 const colorMesh = new Blender('#66ff00',0);
-
+const healthColorMesh = new Blender('#66ff00',0);
 //Player Game Stats UI
 //const shoot = throttle(() => console.log("bang"), 0.5);
 const ammoColor = new Blender('#66ff00',0);
 
 
 function playerUI(){
+
+
+    //Health Bar
+    push();
+    strokeWeight(0.5);
+    rectMode(CORNER);
+    translate(player.x,player.y);
+    fill('#818181');
+    const w2 = 50;
+    rect(-w2/2,(-player.size().y*2 + 15),w2,10);
+    healthColorMesh.value = player.health/100;
+    fill(healthColorMesh.actualize('#ff0000'));
+    let width2 = limit(map(player.health,0,100,0,w2-1),0,100);
+    noStroke();
+    rect(-w2/2+0.5,(-player.size().y*2 + 14.5),width2,9.5);
+    
+    pop();
+
+
     //Sprint Charge
     push();
     strokeWeight(0.5);
@@ -520,20 +720,7 @@ function playerUI(){
     pop();
 
 
-    //Health Bar
-    push();
-    strokeWeight(0.5);
-    rectMode(CORNER);
-    translate(player.x,player.y);
-    fill('#818181');
-    const w2 = 50;
-    rect(-w2/2,(-player.size().y*2 + 15),w2,10);
-    fill(colorMesh.actualize('#ff0000'));
-    let width2 = limit(map(player.health,0,100,0,w2-1),0,100);
-    noStroke();
-    rect(-w2/2+0.5,(-player.size().y*2 + 14.5),width2,9.5);
     
-    pop();
 
     
     //Gun Ammo and Mag
@@ -593,13 +780,14 @@ function playerUI(){
         fill('#818181');
         rect(0,0,100,8);
         fill('#772323');
+        noStroke();
         rect(0,0,width3,8);
         let size = player.size();
         noFill();
         stroke('#772323');
         strokeWeight(1);
-        rect(0,size.y*2,size.x+player.melee.range,size.y+player.melee.range);
-    }
+        player.hitbox[1].rendering.visible = true;
+    }else player.hitbox[1].rendering.visible = false;
     pop();
 
 
@@ -613,6 +801,13 @@ var _test;
 player.scripts.push((self)=>{
     // world.camera.x = player.x;
     // world.camera.y = player.y;
+    player.weapon.update();
+
+    player.hitbox[1].transform.scale.x = player.size().x/2 + player.melee.range;
+    let _hbS = player.hitbox[1].size();
+    if(player.melee.display.start >= player.melee.display.end)player.hitbox[1].offset.x = (mouse.x < player.x) ? -_hbS.x/2-player.size().x/4 : _hbS.x/2+player.size().x/4;
+
+
     world.camera.link(player,0,':50');
     if(getInput('key@arrowright')){
         world.camera.x += 2;
@@ -648,7 +843,8 @@ player.scripts.push((self)=>{
     if(getInput('mouse@left') && !player.weapon.reloading && player.weapon._mag > 0){
         player.weapon.shoot();
     }else if(!getInput('mouse@left') && !player.weapon.reloading && player.weapon._mag > 0){
-        player.weapon.canShoot = true;
+        if(player.weapon.fireType == 1 || (player.weapon.fireType == 3 && player.weapon._burstToggle))
+            player.weapon.canShoot = true;
     }
     if(typeof _test == 'function')
     if(_test() && !player.weapon.reloading){
@@ -728,7 +924,7 @@ new Scene('play', '#4e4e8d', ()=>{
     waveStart();
     let gg = keyboard.getKey('shift');
     colorText(`player sprint: ${player.sprint.value} \nplayer speed: ${pad(player.velocity().x,2,2)} \nshifted: ${gg ? gg.getHeld() : 0}` + 
-    `\n${bullets[bullets.length-1]?.velocity().x}`,100,70);
+    `\n${mouse.x} ${player.x}`,100,70);
     if(getInput('key@e:held')>0)console.log(67);
     findSlope(player.x,player.y,mouse.x,mouse.y);
     

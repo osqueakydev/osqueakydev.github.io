@@ -26,6 +26,48 @@ function throttle(fn, seconds) {
     };
 }
 
+
+
+/**
+ * Like throttle, but each "tick" fires `count` calls spaced `intervalSeconds` apart,
+ * and blocks any new tick for `totalSeconds` from the start of that burst.
+ *
+ * @param fn              function to run
+ * @param totalSeconds    cooldown / max wait between bursts
+ * @param count           how many times to run within the burst
+ * @param intervalSeconds gap between each fire (defaults to totalSeconds / count)
+ * @param opts.leading    if true, first fire happens immediately (t=0);
+ *                        if false, first fire is delayed by intervalSeconds
+ */
+function burstThrottle(fn, totalSeconds, count, intervalSeconds = totalSeconds / count, { leading = true } = {}) {
+    let cycleStart = -Infinity;
+    const timers = new Set();
+
+    const throttled = (...args) => {
+        const now = clock();
+        if (now - cycleStart < totalSeconds) return false;   // still cooling down
+        cycleStart = now;
+
+        for (let i = 0; i < count; i++) {
+            const offset = leading ? i : i + 1;
+            const id = setTimeout(() => {
+                timers.delete(id);
+                fn(...args);
+            }, offset * intervalSeconds * 1000);
+            timers.add(id);
+        }
+        return true;
+    };
+
+    // Optional: cancel pending burst fires (e.g., on teardown)
+    throttled.cancel = () => {
+        for (const id of timers) clearTimeout(id);
+        timers.clear();
+    };
+
+    return throttled;
+}
+
 function debounce(fn, seconds) {
     let id = null;
     return (...args) => {

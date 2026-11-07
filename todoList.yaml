@@ -20,14 +20,15 @@ sections:
     items:
       - text: Collision Exclusion Rules
         note: add anti-collision list for solid objects (to avoid solid collision with those objects)
+        done: true
       - text: Collisional and Slope Physics 
         note: Collision resolutions and proper slope mechanics
         done: true
       - text: Triangle on triangle collision doesn't work
         priority: high
       - text: Ghost object collision
-        note: ghost objects shouldn't affect other objects (especially velocity)
-        done: true
+        note: ghost objects shouldn't affect other objects (especially velocity) (ghost = !solid,!resolve,!pushable)
+        priority: high 
       - text: High Velocity Collision
         note: ray-casting to detect collision as high velocities
       - text: Object collision with point method

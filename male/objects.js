@@ -764,6 +764,160 @@ class Hitbox extends geometryObject {
         return { x: best.x, y: best.y };
     }
 
+    // ------------------------------------------------------------
+    // SWEPT COLLISION (CCD / time of impact)
+    // ------------------------------------------------------------
+    // Every hitbox shape (rect, triangle, circle, ellipse) is convex, so
+    // one "support function" per shape is enough to measure the distance
+    // between any two of them (GJK) and, from that, the exact moment a
+    // moving hitbox first touches a still one (conservative advancement).
+    // ------------------------------------------------------------
+
+    /**
+     * Returns a function f(dx, dy) -> the point of this hitbox farthest in
+     * direction (dx, dy), in world space at the hitbox's CURRENT position.
+     * The shape data is read once, so the function is cheap to call
+     * repeatedly. Same shapes getSupportPoint() uses.
+     */
+    _ccdSupport() {
+        if (this.shape === "circle" || this.shape === "ellipse") {
+            const pos = this.getWorldPosition();
+            const isEllipse = Array.isArray(this.radius);
+            const rx = isEllipse ? this.radius[0] : (this.radius || this.width / 2);
+            const ry = isEllipse ? this.radius[1] : (this.radius || this.height / 2);
+            return (dx, dy) => {
+                const len = Math.hypot(dx, dy) || 1;
+                dx /= len; dy /= len;
+                const k = Math.sqrt(rx * rx * dx * dx + ry * ry * dy * dy) || 1;
+                return { x: pos.x + (rx * rx * dx) / k, y: pos.y + (ry * ry * dy) / k };
+            };
+        }
+        const verts = this.shape === "triangle"
+            ? this.getWorldTrianglePoints(0)
+            : this.getRectangleVertices(0);
+        if (!verts || !verts.length) {
+            const p = this.getWorldPosition();
+            return () => ({ x: p.x, y: p.y });
+        }
+        return (dx, dy) => {
+            let best = verts[0], bestDot = -Infinity;
+            for (let i = 0; i < verts.length; i++) {
+                const d = verts[i].x * dx + verts[i].y * dy;
+                if (d > bestDot) { bestDot = d; best = verts[i]; }
+            }
+            return { x: best.x, y: best.y };
+        };
+    }
+
+    /**
+     * Closest point to the origin on a 2- or 3-point simplex, plus the
+     * smallest sub-simplex that still holds it. Helper for _gjk().
+     * Returns { overlap: true } when the origin is inside the triangle.
+     */
+    static _closestOnSimplex(s) {
+        const seg = (a, b) => {
+            const abx = b.x - a.x, aby = b.y - a.y;
+            const l2 = abx * abx + aby * aby;
+            const t = l2 > 0 ? -(a.x * abx + a.y * aby) / l2 : 0;
+            if (t <= 0) return { c: { x: a.x, y: a.y }, s: [a] };
+            if (t >= 1) return { c: { x: b.x, y: b.y }, s: [b] };
+            return { c: { x: a.x + t * abx, y: a.y + t * aby }, s: [a, b] };
+        };
+        if (s.length === 2) return seg(s[0], s[1]);
+
+        const [a, b, c] = s;
+        const cr = (p, q) => (q.x - p.x) * (-p.y) - (q.y - p.y) * (-p.x);   // cross(q-p, origin-p)
+        const c1 = cr(a, b), c2 = cr(b, c), c3 = cr(c, a);
+        const area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if (Math.abs(area) > 1e-12 &&
+            ((c1 >= 0 && c2 >= 0 && c3 >= 0) || (c1 <= 0 && c2 <= 0 && c3 <= 0))) {
+            return { overlap: true };
+        }
+        let best = null, bestD = Infinity;
+        for (const r of [seg(a, b), seg(b, c), seg(c, a)]) {
+            const d = r.c.x * r.c.x + r.c.y * r.c.y;
+            if (d < bestD) { bestD = d; best = r; }
+        }
+        return best;
+    }
+
+    /**
+     * GJK distance between two convex shapes. `sup(dx, dy)` must return the
+     * point of the Minkowski difference (A - B) farthest along (dx, dy).
+     *
+     * Returns { overlap: true } if the shapes overlap or touch, otherwise
+     * { overlap: false, dist, nx, ny } - the gap between them and the unit
+     * direction from B toward A across that gap.
+     */
+    static _gjk(sup) {
+        let simplex = [sup(1, 0)];
+        let c = { x: simplex[0].x, y: simplex[0].y };
+        for (let it = 0; it < 32; it++) {
+            const cc = c.x * c.x + c.y * c.y;
+            if (cc < 1e-12) return { overlap: true };
+            const w = sup(-c.x, -c.y);
+            const dist = Math.sqrt(cc);
+            // Can the support point get any closer to the origin than c? If not, c is the answer.
+            if ((cc - (c.x * w.x + c.y * w.y)) / dist < 1e-4) {
+                return { overlap: false, dist, nx: c.x / dist, ny: c.y / dist };
+            }
+            simplex.push(w);
+            const r = Hitbox._closestOnSimplex(simplex);
+            if (r.overlap) return { overlap: true };
+            simplex = r.s;
+            c = r.c;
+        }
+        const dist = Math.hypot(c.x, c.y);
+        return dist < 1e-6 ? { overlap: true } : { overlap: false, dist, nx: c.x / dist, ny: c.y / dist };
+    }
+
+    /**
+     * Time of impact: how far along the displacement (mx, my) hitbox `a`
+     * travels before it first touches hitbox `b` (b stays where it is).
+     *
+     * Conservative advancement: measure the gap with GJK, advance by
+     * gap / closing-speed (which can never overshoot the first contact,
+     * because the gap between two translating convex shapes is a convex
+     * function of time), and repeat until they touch.
+     *
+     * Returns:
+     *   null     - they do not touch anywhere along the move
+     *   0..1     - fraction of the move at first contact
+     *   "touch"  - they already touch / overlap at the start, so there is
+     *              no usable gap to advance across (caller decides)
+     */
+    static timeOfImpact(a, b, mx, my) {
+        const len = Math.hypot(mx, my);
+        if (len < 1e-9) return null;
+        const supA = a._ccdSupport();
+        const supB = b._ccdSupport();
+        const TOUCH = 1e-3;
+        let t = 0;
+        for (let i = 0; i < 32; i++) {
+            const ox = mx * t, oy = my * t;
+            const r = Hitbox._gjk((dx, dy) => {
+                const p = supA(dx, dy), q = supB(-dx, -dy);
+                return { x: p.x + ox - q.x, y: p.y + oy - q.y };
+            });
+            if (r.overlap || r.dist <= TOUCH) {
+                if (i === 0) {
+                    // Touching at the start: only a hit if moving into it.
+                    if (!r.overlap) {
+                        const vn = mx * r.nx + my * r.ny;
+                        if (-vn <= 1e-4 * len) return null;     // sliding along / moving away
+                    }
+                    return "touch";
+                }
+                return t;
+            }
+            const vn = mx * r.nx + my * r.ny;                  // closing speed along the gap
+            if (-vn <= 1e-4 * len) return null;                // not approaching
+            t += r.dist / -vn;
+            if (t > 1) return null;                            // contact is beyond this move
+        }
+        return t;
+    }
+
     /**
      * Returns the point on THIS hitbox's surface that is nearest to
      * `other`'s world position. Used as the contact point for slope
@@ -1808,6 +1962,24 @@ class Hitbox extends geometryObject {
 // An object with one or more Hitboxes, per-tick physics, and a
 // list of scripts (functions called with the object as `self`).
 class gameObject extends geometryObject {
+    // Swept-collision (CCD) tuning, shared by every gameObject / Entity.
+    //   enabled          turn the swept path off to get plain one-step movement
+    //   thresholdFactor  a move longer than (smallest hitbox side * this) is swept
+    //   moveScale        per-tick distance scale (velocity * deltaTime * moveScale)
+    //   maxIterations    contacts handled per tick; leftover movement is dropped
+    //   penetration      px pushed into a contact so processCollisions() resolves it
+    //   deepSkin         overlap deeper than this at the start counts as "already inside"
+    //   probe            px used to tell "moving into" from "sliding along" when touching
+    static CCD = {
+        enabled: true,
+        thresholdFactor: 0.01,
+        moveScale: 10,
+        maxIterations: 100000,
+        penetration: 0.01,
+        deepSkin: 0.01,
+        probe: 0.01,
+    };
+
     static init() {
         if (gameObject.started) return;
         gameObject.objects = [];
@@ -2113,65 +2285,11 @@ class gameObject extends geometryObject {
             vel.y *= scaleFactor;
         }
         
-        let move = {
-            x: (vel.self.x || 0) * deltaTime * 10,
-            y: (vel.self.y || 0) * deltaTime * 10,
-        };
+        // Move along the velocity and run collisions. Fast moves use swept
+        // collision (time of impact), so nothing can be skipped over.
+        // See _ccdMove().
+        this._ccdMove(deltaTime);
 
-
-        // pos.x += move.x;
-        // pos.y += move.y;
-        //this._sweepMove(deltaTime);
-
-
-        const gap = Math.hypot(move.x,move.y);
-        const gapAngle = Math.atan2(move.x,move.y) - Math.PI/2;
-        const sizeThreshold = Math.hypot(scale.x*-Math.cos(gapAngle),scale.y*-Math.sin(gapAngle));
-
-        //if the velocity moves the object greater than its size: test for ray cast
-        if(gap > sizeThreshold){
-            //console.log(`Ray-Casting Reccomended:`,pad(gap/sizeThreshold));
-            let subMove = {
-                x:move.x/sizeThreshold,
-                y:move.y/sizeThreshold
-            };
-            for(let g = 0; g<gap;g+=gap/sizeThreshold){
-                pos.x += subMove.x;
-                pos.y += subMove.y;
-                this.processCollisions();
-            }
-        }
-
-        // // Sub-step movement so fast objects don't tunnel.
-        // let subSteps = 1000;
-        // let maxStepSize = 1;
-        // let totalDist = Math.hypot(move.x,move.y);
-        // //if (totalDist > maxStepSize) subSteps = Math.ceil(totalDist / maxStepSize);
-        // //subSteps = Math.min(subSteps, 100);
-
-        // let subMove = { x: move.x / subSteps, y: move.y / subSteps };
-        // this._subStepCount = subSteps;
-
-        // for (let step = 0; step < subSteps; step++) {
-        //     pos.x += subMove.x;
-        //     pos.y += subMove.y;
-
-        //     if (isNaN(pos.x) || isNaN(pos.y)) {
-        //         console.warn(`Position became NaN for object ${this.id}, reverting to previous position`);
-        //         pos.x = this.previousPosition.x || 0;
-        //         pos.y = this.previousPosition.y || 0;
-        //         return;
-        //     }
-
-        //     this.hitbox.forEach((hb) => {
-        //         hb.updatePosition();
-        //         hb.width = hb.transform.scale.x || 20;
-        //         hb.height = hb.transform.scale.y || 20;
-        //     });
-
-        //     this.processCollisions();
-        // }
-        
         // Gravity.
         if (this.physicsToggles.gravity) {
             if (this.grounded) {
@@ -2211,6 +2329,220 @@ class gameObject extends geometryObject {
         this.updateParentScene();
     }
 
+
+    /**
+     * Union of this object's enabled hitbox bounds (inflated by `err`),
+     * or null if it has none. Used by _ccdMove's broad-phase.
+     */
+    _hitboxBounds(err = 0) {
+        let u = null;
+        this.hitbox.forEach((hb) => {
+            if (!hb.collision || !hb.collision.enabled) return;
+            const b = hb.bounds(err);
+            if (!u) u = { left: b.left, right: b.right, top: b.top, bottom: b.bottom };
+            else {
+                u.left   = Math.min(u.left,   b.left);
+                u.right  = Math.max(u.right,  b.right);
+                u.top    = Math.min(u.top,    b.top);
+                u.bottom = Math.max(u.bottom, b.bottom);
+            }
+        });
+        return u;
+    }
+
+    /**
+     * Moves the object along its velocity for one tick using swept collision
+     * (continuous collision detection / time of impact).
+     *
+     *   move = velocity.self * deltaTime * CCD.moveScale     (per-tick distance)
+     *
+     *   Short move  (<= CCD.thresholdFactor * smallest hitbox side):
+     *       plain step, then processCollisions() - same as before.
+     *
+     *   Fast move:
+     *       1. Time of impact against every solid hitbox near the swept
+     *          area (Hitbox.timeOfImpact - exact, no samples to miss).
+     *       2. Move to the earliest contact (plus CCD.penetration so the
+     *          overlap is real) and run processCollisions() there. It
+     *          resolves the contact and cancels the velocity into it.
+     *       3. Spend the rest of the tick on the corrected velocity (slide
+     *          along the wall / floor) and repeat from 1.
+     *       When nothing is in the way the object just takes the full move.
+     *
+     * Hitboxes that don't resolve (triggers, excluded objects) are still
+     * detected at their moment of contact but don't stop the object.
+     *
+     * this.collisions / this.collision.sides are merged across every
+     * processCollisions() call made during the sweep, so a contact made
+     * mid-move is still visible to scripts at the end of the tick.
+     *
+     * Side effects: transform.position, hitbox positions, velocity (via
+     * resolution), this._subStepCount (contacts processed + final step).
+     */
+    _ccdMove(deltaTime) {
+        const S = gameObject.CCD;
+        const pos = this.transform.position;
+        const vel = this.transform.velocity;
+
+        const toMove = () => ({
+            x: (vel.self.x || 0) * deltaTime * 10, //* S.moveScale,
+            y: (vel.self.y || 0) * deltaTime * 10 //* S.moveScale,
+        });
+        const syncHitboxes = () => this.hitbox.forEach((hb) => {
+            hb.updatePosition();
+            hb.width = hb.transform.scale.x || 20;
+            hb.height = hb.transform.scale.y || 20;
+        });
+        const advance = (dx, dy) => {
+            pos.x += dx;
+            pos.y += dy;
+            if (isNaN(pos.x) || isNaN(pos.y)) {
+                console.warn(`Position became NaN for object ${this.id}, reverting to previous position`);
+                pos.x = this.previousPosition.x || 0;
+                pos.y = this.previousPosition.y || 0;
+                return false;
+            }
+            syncHitboxes();
+            return true;
+        };
+
+        const move = toMove();
+        const gap = Math.hypot(move.x, move.y);
+        this._subStepCount = 1;
+
+        // ---- Short move (or CCD off / no scene): plain step ----
+        const ub = this._hitboxBounds(0);
+        const minDim = ub
+            ? Math.min(ub.right - ub.left, ub.bottom - ub.top)
+            : Math.min(this.transform.scale.x, this.transform.scale.y);
+        const scene = (S.enabled && gap > Math.max(1, minDim * S.thresholdFactor))
+            ? this.getParentScene() : null;
+        if (!scene) {
+            if (!advance(move.x, move.y)) return;
+            this.processCollisions();
+            return;
+        }
+
+        // ---- Broad-phase: solid objects near the swept area ----
+        // Padded by a share of the move because resolution can bend the path.
+        const pad = 2 + gap * 0.25;
+        const sb = this._hitboxBounds(0) || { left: pos.x, right: pos.x, top: pos.y, bottom: pos.y };
+        const swept = {
+            left:   sb.left   + Math.min(0, move.x) - pad,
+            right:  sb.right  + Math.max(0, move.x) + pad,
+            top:    sb.top    + Math.min(0, move.y) - pad,
+            bottom: sb.bottom + Math.max(0, move.y) + pad,
+        };
+        const candidates = scene.objects.filter((other) => {
+            if (other === this || other.id === this.id || other.deleted || !other.active) return false;
+            if (!other.collision || !other.collision.enabled || !other.collision.solid) return false;
+            return other.hitbox.some((hb) => {
+                const ob = hb.bounds(0);
+                return ob.left < swept.right && ob.right > swept.left &&
+                       ob.top  < swept.bottom && ob.bottom > swept.top;
+            });
+        });
+
+        // Everything processCollisions() reports during the sweep.
+        const merged = [];
+        const sideAcc = {};
+        const record = () => {
+            this.collisions.forEach((c) => {
+                if (!merged.some((m) => m.thisHitbox === c.thisHitbox && m.otherHitbox === c.otherHitbox)) merged.push(c);
+            });
+            Object.keys(this.collision.sides).forEach((k) => {
+                if (this.collision.sides[k]) sideAcc[k] = this.collision.sides[k];
+            });
+        };
+
+        // Touching at the start: is the object moving INTO it, or sliding / leaving / already inside?
+        const movesIntoContact = (th, oh, rem, remLen) => {
+            if (th.collidesWith(oh, -S.deepSkin)) return false;          // already inside: resolution's job
+            const ox = pos.x, oy = pos.y;
+            const k = S.probe / remLen;
+            pos.x += rem.x * k;
+            pos.y += rem.y * k;
+            this.hitbox.forEach((hb) => hb.updatePosition());
+            const deeper = th.collidesWith(oh, -S.deepSkin);
+            pos.x = ox;
+            pos.y = oy;
+            this.hitbox.forEach((hb) => hb.updatePosition());
+            return deeper;
+        };
+
+        const skip = new Set();          // other hitboxes that can't stop us any more this tick
+        let used = 0;                    // fraction of this tick's move already travelled
+        let rem = move;                  // displacement still to travel
+        let contacts = 0;
+
+        for (let iter = 0; iter < S.maxIterations; iter++) {
+            const remLen = Math.hypot(rem.x, rem.y);
+            if (remLen < 1e-4) break;    // nothing left to travel (last position was already tested)
+
+            // ---- Earliest time of impact along the remaining move ----
+            let best = null;
+            for (const other of candidates) {
+                if (other.deleted) continue;
+                const excluded = this.collision.excluded.includes(other);
+                for (const oh of other.hitbox) {
+                    if (!oh.collision || !oh.collision.enabled || skip.has(oh)) continue;
+                    for (const th of this.hitbox) {
+                        if (!th.collision || !th.collision.enabled) continue;
+                        let t = Hitbox.timeOfImpact(th, oh, rem.x, rem.y);
+                        if (t === null) continue;
+                        if (t === "touch") {
+                            if (movesIntoContact(th, oh, rem, remLen)) t = 0;
+                            else { skip.add(oh); continue; }
+                        }
+                        if (!best || t < best.t) {
+                            // Would processCollisions() resolve this pair (and so stop the object)?
+                            const resolves = !excluded &&
+                                this.collision.resolve && other.collision.resolve &&
+                                th.collision.resolve && oh.collision.resolve && oh.collision.solid &&
+                                (this.collision.solid || other.collision.solid);
+                            best = { t, oh, resolves };
+                        }
+                    }
+                }
+            }
+
+            // ---- Nothing in the way: take the rest of the move ----
+            if (!best) {
+                if (!advance(rem.x, rem.y)) return;
+                this.processCollisions();
+                record();
+                contacts++;
+                break;
+            }
+
+            // ---- Move to first contact (just inside it) and resolve there ----
+            const tt = Math.min(1, best.t + S.penetration / remLen);
+            if (!advance(rem.x * tt, rem.y * tt)) return;
+
+            const vxBefore = vel.x, vyBefore = vel.y;
+            this.processCollisions();
+            record();
+            contacts++;
+            if (!best.resolves) skip.add(best.oh);     // detected; it just doesn't block movement
+
+            // Spend what is left of the tick on the velocity resolution left us with.
+            vel.self.x += vel.x - vxBefore;
+            vel.self.y += vel.y - vyBefore;
+            used += (1 - used) * tt;
+            const full = toMove();
+            rem = { x: full.x * (1 - used), y: full.y * (1 - used) };
+        }
+        // (If maxIterations ran out, the leftover movement is dropped - the
+        //  object stays at its last resolved contact instead of risking a skip.)
+
+        this._subStepCount = Math.max(1, contacts);
+        if (contacts > 0) {
+            this.collisions = merged;
+            Object.keys(sideAcc).forEach((k) => {
+                if (this.collision.sides.hasOwnProperty(k)) this.collision.sides[k] = sideAcc[k];
+            });
+        }
+    }
 
     /**
      * Returns true if moving this object to (x, y) would put any of its
@@ -2446,7 +2778,9 @@ class gameObject extends geometryObject {
             this.collision.excluded.forEach(ex => {
                 if(ex == other)excluded = true;
             });
-            other.hitbox.forEach((hb) => hb.updatePosition());
+            other.hitbox.forEach((hb) => {
+                if(hb.collision.solid && hb.collision.enabled)hb.updatePosition()
+            });
 
             this.hitbox.forEach((thisHitbox, index) => {
                 if (!thisHitbox.collision || !thisHitbox.collision.enabled) return;
@@ -2474,7 +2808,7 @@ class gameObject extends geometryObject {
                         });
                         if (sides.includes("embedded")) this.collision.sides.embedded = true;
 
-                        if (index === lowestHitboxIndex && sides.includes("bottom") && !excluded) {
+                        if (index === lowestHitboxIndex && sides.includes("bottom") && !excluded && thisHitbox.collision.solid) {
                             if (this.collision.solid) {
                                 if (other.grounded) {
                                     this.grounded = true;
@@ -2499,7 +2833,7 @@ class gameObject extends geometryObject {
             const lb = lowestHitbox.bounds();
             scene.objects.forEach((other) => {
                 if (this.grounded || other.id === this.id || other.deleted || !other.active) return;
-                if (!other.collision || !other.collision.enabled || !other.collision.resolve) return;
+                if (!other.collision || !other.collision.enabled || !other.collision.resolve || !other.collision.solid) return;
                 if (!(other.collision.static || !other.collision.pushable)) return;
                 var excluded = false;
                 this.collision.excluded.forEach(ex => {
@@ -2507,7 +2841,7 @@ class gameObject extends geometryObject {
                 });
                 if(!excluded)
                 other.hitbox.forEach((hb) => {
-                    if (this.grounded || !hb.collision || !hb.collision.enabled || !hb.collision.resolve) return;
+                    if (this.grounded || !hb.collision || !hb.collision.enabled || !hb.collision.resolve || !hb.collision.solid) return;
                     const peak = this._getPeakPoint(hb);
                     if (!peak) return;
                     if (Math.abs(lb.bottom - peak.y) > 1.0) return;
@@ -2528,7 +2862,7 @@ class gameObject extends geometryObject {
                 if(coll.excluded) continue;
                 // Skip resolution if either object opts out.
                 if (!this.collision.resolve || !coll.other.collision.resolve) continue;
-                if (!coll.thisHitbox.collision.resolve || !coll.otherHitbox.collision.resolve) continue;
+                if (!coll.thisHitbox.collision.resolve || !coll.otherHitbox.collision.resolve || !coll.otherHitbox.collision.solid) continue;
 
                 if (coll.thisHitbox.collidesWith(coll.otherHitbox, 0)) {
                     if (this.collision.solid || coll.other.collision.solid) {
@@ -3769,39 +4103,9 @@ class Entity extends gameObject {
             vel.y *= scaleFactor;
         }
 
-        let move = {
-            x: (vel.self.x || 0) * deltaTime * 10,
-            y: (vel.self.y || 0) * deltaTime * 10,
-        };
-
-        let subSteps = 1;
-        let maxStepSize = 20;
-        let totalDist = Math.sqrt(move.x * move.x + move.y * move.y);
-        if (totalDist > maxStepSize) subSteps = Math.ceil(totalDist / maxStepSize);
-        subSteps = Math.min(subSteps, 10);
-
-        let subMove = { x: move.x / subSteps, y: move.y / subSteps };
-        this._subStepCount = subSteps;
-
-        for (let step = 0; step < subSteps; step++) {
-            pos.x += subMove.x;
-            pos.y += subMove.y;
-
-            if (isNaN(pos.x) || isNaN(pos.y)) {
-                console.warn(`Position became NaN for object ${this.id}, reverting to previous position`);
-                pos.x = this.previousPosition.x || 0;
-                pos.y = this.previousPosition.y || 0;
-                return;
-            }
-
-            this.hitbox.forEach((hb) => {
-                hb.updatePosition();
-                hb.width = hb.transform.scale.x || 20;
-                hb.height = hb.transform.scale.y || 20;
-            });
-
-            this.processCollisions();
-        }
+        // Same swept (time of impact) movement as gameObject (replaces the old
+        // fixed 20px / max-10 substep loop, which still let fast entities tunnel).
+        this._ccdMove(deltaTime);
 
         if (this.physicsToggles.gravity) {
             if (this.grounded) {

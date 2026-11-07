@@ -634,6 +634,24 @@ class DevConsole {
             },
         });
 
+        DevConsole.registerCommand({
+            name: "weapon", aliases: ['swap','inventory'], usage: '/weapon <arsonal weapon>',
+            help: 'Swaps player weapon',
+            run(input){
+                try {
+                    let inv = arsonal;
+                    //input = input?.toLowerCase();
+                    var inventory = Object.keys(inv);
+                    var valid = inventory.includes(input);
+                    player.weapon = inv[input];
+                    DevConsole.print(`Player Weapon Currently: ${input}`,"#6bd18a");
+                    
+                } catch(e) {
+                    DevConsole.print(`Player Weapon counldn't be swapped to ${arsonal[input]}\nPlayer Weapon Currently: ${player.weapon.id} \nReason: ${e}`,"#6bd18a");
+                }
+            }
+        });
+
         DevConsole.registerDisplay(TodoPanel.asDisplay());
         DevConsole.registerDisplay({
             name: "none", aliases: ["off", "hide", "close"], help: "hide the displayed panel",
