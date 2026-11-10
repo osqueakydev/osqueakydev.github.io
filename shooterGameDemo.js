@@ -264,22 +264,26 @@ class Gun {
                         }, 1000/(this.firerate*this.burst));
                     }
                     let _prematureCollision = false;
+                    let damageApplied = false;
                     Scene.getActiveScene().objects.forEach(s => {
                         if(s.id != _playerMelee.id && s.id != player.id){
                             if(s.collision.enabled && s.collision.solid){
-                                if(meleeCanReach(s) && _playerMelee.hitbox[0].collidesWith(s.hitbox[0],0)){
+                                if(!damageApplied && meleeCanReach(s) && _playerMelee.hitbox[0].collidesWith(s.hitbox[0],0)){
                                     
                                     if(s instanceof Player){
                                         s.applyDamage(this.damage * gameSettings.friendlyDamage);
                                         this._mag -= 1;
                                         //console.log('premature collision',s.constructor.name);
                                         _triggers._prematureCollision.damaged = true;
+                                        damageApplied = true;
+                                        
                                     }else if(s instanceof Entity){
                                         if(s.applyDamage)s.applyDamage(this.damage,damageDisplay);
                                         else s.health -= this.damage;
                                         this._mag -= 1;
                                         //console.log('premature collision',s.constructor.name);
                                         _triggers._prematureCollision.damaged = true;
+                                        damageApplied = true;
                                     }
                                     _triggers._prematureCollision.self = true;
                                     
@@ -789,7 +793,7 @@ function newEnemy(x, y, w, h, lvl) {
             (e) => !(e.other instanceof self.targeting.type)
         );
         const _blocked = inWay.length > 0 || _walls.some((e) => _sideContact(self, e));
-        if (_blocked && lvl > 0 && self.velocity().y >= 0 && self.grounded && self.y > player.y)
+        if (_blocked && lvl > 0 && self.velocity().y >= 0 && self.grounded)
             self.velocity("add", 0, -self.size().y * 1.25);
 
         self.velocity("set", limit(vel.x, -self.speed.max, self.speed.max), vel.y);
@@ -945,6 +949,7 @@ const obsticals = [
 obsticals.forEach((o,i) => {
     let p = new gameObject(o.x,o.y,o.w,o.h,'play');
     p.setGravityObject();
+    p.rendering.color = !o.moveable ? '#221515' : '#7ae4ff';
     if(!o.moveable)
         p.collision.pushable = false;
     obsticals[i] = p;
@@ -1609,6 +1614,7 @@ function _gameReset(){
     });
     currentLevel = 0;
     player.position('set',200,200);
+    mainMenu.start.events.clicked = false;
     Scene.setScene('menu');
 }
 
@@ -1667,6 +1673,7 @@ new Scene('menu',70,()=>{
     world.camera.y = 0;
     push();
     fill('white');
+    //controls and levels info
     colorText(`3 Waves\nControls: \nWASD + Space: movement \nShift: sprint \nLeft Click: shoot \nRight Click: melee \nR: reload \nQ: toggle fire mode \nY: arsonal display panel \n\n{While Arsonal is Open} \nUp and Down Arrow: switch weapons`,200,200);
     pop();
 
