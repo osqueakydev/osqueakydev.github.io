@@ -115,22 +115,26 @@ class Gun {
                     //     return;
                     // }
                     let _prematureCollision = false;
+                    let damageApplied = false;
                     Scene.getActiveScene().objects.forEach(s => {
                         if(s.id != _playerMelee.id && s.id != player.id){
                             if(s.collision.enabled && s.collision.solid){
-                                if(meleeCanReach(s) && _playerMelee.hitbox[0].collidesWith(s.hitbox[0],0)){
+                                if(!damageApplied && meleeCanReach(s) && _playerMelee.hitbox[0].collidesWith(s.hitbox[0],0)){
                                     
                                     if(s instanceof Player){
                                         s.applyDamage(this.damage * gameSettings.friendlyDamage);
                                         this._mag -= 1;
                                         //console.log('premature collision',s.constructor.name);
                                         _triggers._prematureCollision.damaged = true;
+                                        damageApplied = true;
+                                        
                                     }else if(s instanceof Entity){
                                         if(s.applyDamage)s.applyDamage(this.damage,damageDisplay);
                                         else s.health -= this.damage;
                                         this._mag -= 1;
                                         //console.log('premature collision',s.constructor.name);
                                         _triggers._prematureCollision.damaged = true;
+                                        damageApplied = true;
                                     }
                                     _triggers._prematureCollision.self = true;
                                     
@@ -503,6 +507,14 @@ class Gun {
         
 
     }
+    reset(){
+        this.reloading = false;
+        this.resetStats();
+        this._mag = this.mag;
+        this._canBurst = true;
+        this.canShoot = true;
+        this.togglingFire = false;
+    }
 }
 
 const ammoTypes = {
@@ -603,6 +615,14 @@ class Level {
             return this.getEnemys().length;
         return this.getEnemys().length / this.spawn.reduce((accumulator, currentValue) => accumulator + currentValue, 0);
     }
+    reset(){
+        this.enemys.forEach(e => {
+            e.delete();
+        });
+        this.enemys = [];
+        this.started = false;
+        this.completed = false;
+    }
 }
 
 
@@ -649,7 +669,7 @@ function newEnemy(x, y, w, h, lvl) {
     let e = new Entity(x, y, w, h, `l${lvl + 1}e`, "play");
     e.setGravityObject();
     e.tags.push("enemy");
-
+    e.rendering.color = '#e7b205';
     e.package(
         Entity.Packages.living(),
         Entity.Packages.speed(),
@@ -1572,7 +1592,25 @@ player.scripts.push((self)=>{
 
 
 
+function _gameReset(){
+    player.sprint.value = 50;
+    player.health = 100;
+    player.shield.value = 0;
+    _triggers._prematureCollision.damaged = false;
+    _triggers._prematureCollision.last = 0;
+    _triggers._prematureCollision.self = false;
 
+    levelMap.forEach(e => {
+        e.reset();
+    });
+    const _ak = Object.keys(arsonal);
+    _ak.forEach(e => {
+        arsonal[e].reset();
+    });
+    currentLevel = 0;
+    player.position('set',200,200);
+    Scene.setScene('menu');
+}
 
 
 
@@ -1584,7 +1622,8 @@ new Scene('play', '#4e4e8d', ()=>{
     if (World.controller && World.controller.connected) {
         World.controller.update();
     }
-    waveStart();
+    if(player.health > 0)waveStart();
+    else _gameReset();
     let gg = keyboard.getKey('shift');
     push();
     translate(world.camera.x,world.camera.y);
@@ -1615,13 +1654,25 @@ function newMenuButton(type,x,w,y,h,txt){
 }
 
 const mainMenu = {
-    buttons:[
+    start:new uiButton(0,0,120,30,'Start Wave','menu'),
 
-    ],
 };
 
 
 
+new Scene('menu',70,()=>{
+    mainMenu.start.position('set',world.canvas.width/2,world.canvas.height/2);
+    world.camera.unlink();
+    world.camera.x = 0;
+    world.camera.y = 0;
+    push();
+    fill('white');
+    colorText(`3 Waves\nControls: \nWASD + Space: movement \nShift: sprint \nLeft Click: shoot \nRight Click: melee \nR: reload \nQ: toggle fire mode \nY: arsonal display panel \n\n{While Arsonal is Open} \nUp and Down Arrow: switch weapons`,200,200);
+    pop();
+
+    if(mainMenu.start.events.clicked)
+        Scene.setScene('play');
+});
 
 
 
@@ -1636,4 +1687,4 @@ const mainMenu = {
 
 
 
-Scene.setScene('play');
+Scene.setScene('menu');
