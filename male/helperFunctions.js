@@ -26,7 +26,11 @@ function throttle(fn, seconds) {
     };
 }
 
-
+function validNumber(n){
+    const returner = Number(n);
+    if(isNaN(returner))return false;
+    else return true;
+}
 
 /**
  * Like throttle, but each "tick" fires `count` calls spaced `intervalSeconds` apart,
@@ -88,7 +92,40 @@ function debounce(fn, seconds) {
 
 
 
+/**
+ * Offset that pins one side of a rotating rectangle to a fixed point.
+ *
+ *     centre = point + sideOffset(angle, width, height, side)
+ *
+ * Canvas coordinates: +x right, +y down, positive angle = clockwise.
+ * `side` refers to the side of the unrotated object ("left" stays the left side as it turns).
+ * unit: "degrees" (default, same as Transform.rotationMode) or "radians".
+ */
+function sideOffset(angle, width, height, side = 'left', unit = "radians") {
+    // Midpoint of the chosen side, relative to the centre, before rotation.
+    let lx, ly;
+    switch (String(side).toLowerCase()) {
+        case "left":   lx = -width / 2; ly = 0;           break;
+        case "right":  lx =  width / 2; ly = 0;           break;
+        case "top":    lx = 0;          ly = -height / 2; break;
+        case "bottom": lx = 0;          ly =  height / 2; break;
+        case "center":
+        case "centre": lx = 0;          ly = 0;           break;
+        default:
+            throw new Error(`sideOffset: unknown side "${side}" (use left, right, top or bottom)`);
+    }
 
+    const rad = (unit === "radians") ? angle : (angle * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    // Rotate that midpoint with the object; the centre sits the opposite way from the pinned point.
+    const clean = (v) => (Math.abs(v) < 1e-10 ? 0 : v);   // no -0 / 6e-17 noise at 90 degrees etc.
+    return {
+        x: clean(-(lx * cos - ly * sin)),
+        y: clean(-(lx * sin + ly * cos)),
+    };
+}
 
 
 

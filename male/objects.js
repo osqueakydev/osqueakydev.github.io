@@ -872,6 +872,40 @@ class Hitbox extends geometryObject {
     }
 
     /**
+     * Contact normal for two shapes that already touch or overlap.
+     *
+     * Finds the direction `d` that minimises the support value of the
+     * Minkowski difference W = A - B, i.e. the outward normal of the face of W
+     * nearest the origin. Moving A by a vector v pushes it DEEPER into B
+     * exactly when v . d > 0. `depth` is how far they overlap (<= 0 when they
+     * only just touch / are slightly apart).
+     *
+     * Coarse scan of 128 directions, then a ternary search around the best
+     * one, so the normal is exact for polygons (a V-shaped minimum) and
+     * accurate for circles / ellipses.
+     */
+    static _penetrationNormal(supA, supB) {
+        const h = (th) => {
+            const dx = Math.cos(th), dy = Math.sin(th);
+            const p = supA(dx, dy), q = supB(-dx, -dy);
+            return (p.x - q.x) * dx + (p.y - q.y) * dy;
+        };
+        const N = 128, step = (Math.PI * 2) / N;
+        let best = Infinity, bestTh = 0;
+        for (let k = 0; k < N; k++) {
+            const v = h(k * step);
+            if (v < best) { best = v; bestTh = k * step; }
+        }
+        let lo = bestTh - step, hi = bestTh + step;
+        for (let i = 0; i < 40; i++) {
+            const m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+            if (h(m1) < h(m2)) hi = m2; else lo = m1;
+        }
+        const th = (lo + hi) / 2;
+        return { nx: Math.cos(th), ny: Math.sin(th), depth: h(th) };
+    }
+
+    /**
      * Time of impact: how far along the displacement (mx, my) hitbox `a`
      * travels before it first touches hitbox `b` (b stays where it is).
      *
@@ -880,13 +914,17 @@ class Hitbox extends geometryObject {
      * because the gap between two translating convex shapes is a convex
      * function of time), and repeat until they touch.
      *
+     * If they already touch at the start there is no gap to advance across,
+     * so the contact normal decides (see _penetrationNormal): moving INTO the
+     * contact at any angle is an immediate hit (0); moving along or away from
+     * it is no hit. Overlap deeper than `skin` counts as already inside.
+     *
      * Returns:
-     *   null     - they do not touch anywhere along the move
-     *   0..1     - fraction of the move at first contact
-     *   "touch"  - they already touch / overlap at the start, so there is
-     *              no usable gap to advance across (caller decides)
+     *   null      - they do not touch anywhere along the move
+     *   0..1      - fraction of the move at first contact
+     *   "inside"  - already overlapping by more than `skin` (resolution's job)
      */
-    static timeOfImpact(a, b, mx, my) {
+    static timeOfImpact(a, b, mx, my, skin = 0.05) {
         const len = Math.hypot(mx, my);
         if (len < 1e-9) return null;
         const supA = a._ccdSupport();
@@ -901,12 +939,10 @@ class Hitbox extends geometryObject {
             });
             if (r.overlap || r.dist <= TOUCH) {
                 if (i === 0) {
-                    // Touching at the start: only a hit if moving into it.
-                    if (!r.overlap) {
-                        const vn = mx * r.nx + my * r.ny;
-                        if (-vn <= 1e-4 * len) return null;     // sliding along / moving away
-                    }
-                    return "touch";
+                    // Touching at the start: the contact normal says whether this move goes deeper.
+                    const c = Hitbox._penetrationNormal(supA, supB);
+                    if (c.depth > skin) return "inside";
+                    return (mx * c.nx + my * c.ny > 1e-4 * len) ? 0 : null;
                 }
                 return t;
             }
@@ -1964,20 +2000,18 @@ class Hitbox extends geometryObject {
 class gameObject extends geometryObject {
     // Swept-collision (CCD) tuning, shared by every gameObject / Entity.
     //   enabled          turn the swept path off to get plain one-step movement
-    //   thresholdFactor  a move longer than (smallest hitbox side * this) is swept
+    //   thresholdFactor  a move longer than (thinnest hitbox side * this) is swept
     //   moveScale        per-tick distance scale (velocity * deltaTime * moveScale)
-    //   maxIterations    contacts handled per tick; leftover movement is dropped
+    //   maxIterations    blocking contacts handled per tick (triggers don't count); leftover movement is dropped
     //   penetration      px pushed into a contact so processCollisions() resolves it
-    //   deepSkin         overlap deeper than this at the start counts as "already inside"
-    //   probe            px used to tell "moving into" from "sliding along" when touching
+    //   deepSkin         overlap deeper than this at the start counts as "already inside" (skipped by the sweep)
     static CCD = {
         enabled: true,
-        thresholdFactor: 0.01,
+        thresholdFactor: 0.1,
         moveScale: 10,
-        maxIterations: 100000,
-        penetration: 0.01,
-        deepSkin: 0.01,
-        probe: 0.01,
+        maxIterations: 40,
+        penetration: 0.05,
+        deepSkin: 0.05,
     };
 
     static init() {
@@ -2383,10 +2417,11 @@ class gameObject extends geometryObject {
         const S = gameObject.CCD;
         const pos = this.transform.position;
         const vel = this.transform.velocity;
+        this._ccdHits = null;        // contacts kept from last tick's sweep (see processCollisions)
 
         const toMove = () => ({
-            x: (vel.self.x || 0) * deltaTime * 10, //* S.moveScale,
-            y: (vel.self.y || 0) * deltaTime * 10 //* S.moveScale,
+            x: (vel.self.x || 0) * deltaTime * S.moveScale,
+            y: (vel.self.y || 0) * deltaTime * S.moveScale,
         });
         const syncHitboxes = () => this.hitbox.forEach((hb) => {
             hb.updatePosition();
@@ -2411,10 +2446,18 @@ class gameObject extends geometryObject {
         this._subStepCount = 1;
 
         // ---- Short move (or CCD off / no scene): plain step ----
-        const ub = this._hitboxBounds(0);
-        const minDim = ub
-            ? Math.min(ub.right - ub.left, ub.bottom - ub.top)
-            : Math.min(this.transform.scale.x, this.transform.scale.y);
+        // Thinnest hitbox side (not its rotated bounding box, which can be much fatter).
+        let minDim = Infinity;
+        this.hitbox.forEach((hb) => {
+            if (!hb.collision || !hb.collision.enabled) return;
+            if (hb.shape === "triangle") {
+                const b = hb.bounds(0);
+                minDim = Math.min(minDim, (b.right - b.left) * 0.5, (b.bottom - b.top) * 0.5);
+            } else {
+                minDim = Math.min(minDim, hb.transform.scale.x || 20, hb.transform.scale.y || 20);
+            }
+        });
+        if (!isFinite(minDim)) minDim = Math.min(this.transform.scale.x, this.transform.scale.y);
         const scene = (S.enabled && gap > Math.max(1, minDim * S.thresholdFactor))
             ? this.getParentScene() : null;
         if (!scene) {
@@ -2437,6 +2480,7 @@ class gameObject extends geometryObject {
             if (other === this || other.id === this.id || other.deleted || !other.active) return false;
             if (!other.collision || !other.collision.enabled || !other.collision.solid) return false;
             return other.hitbox.some((hb) => {
+                if (!hb.collision || !hb.collision.enabled) return false;   // disabled hitboxes can't collide
                 const ob = hb.bounds(0);
                 return ob.left < swept.right && ob.right > swept.left &&
                        ob.top  < swept.bottom && ob.bottom > swept.top;
@@ -2455,27 +2499,21 @@ class gameObject extends geometryObject {
             });
         };
 
-        // Touching at the start: is the object moving INTO it, or sliding / leaving / already inside?
-        const movesIntoContact = (th, oh, rem, remLen) => {
-            if (th.collidesWith(oh, -S.deepSkin)) return false;          // already inside: resolution's job
-            const ox = pos.x, oy = pos.y;
-            const k = S.probe / remLen;
-            pos.x += rem.x * k;
-            pos.y += rem.y * k;
-            this.hitbox.forEach((hb) => hb.updatePosition());
-            const deeper = th.collidesWith(oh, -S.deepSkin);
-            pos.x = ox;
-            pos.y = oy;
-            this.hitbox.forEach((hb) => hb.updatePosition());
-            return deeper;
+        // Pairs (my hitbox, other hitbox) that can't stop us any more this tick. Keyed by the PAIR:
+        // one of my hitboxes that doesn't resolve (a melee / sensor box) touching a wall must not
+        // stop the wall from blocking my solid hitbox.
+        const skip = new Map();          // my hitbox -> Set of other hitboxes
+        const skipped = (th, oh) => skip.has(th) && skip.get(th).has(oh);
+        const addSkip = (th, oh) => {
+            if (!skip.has(th)) skip.set(th, new Set());
+            skip.get(th).add(oh);
         };
-
-        const skip = new Set();          // other hitboxes that can't stop us any more this tick
         let used = 0;                    // fraction of this tick's move already travelled
         let rem = move;                  // displacement still to travel
         let contacts = 0;
+        let blocking = 0;                // contacts that actually stopped / redirected the object
 
-        for (let iter = 0; iter < S.maxIterations; iter++) {
+        for (let iter = 0; iter < S.maxIterations + 64 && blocking < S.maxIterations; iter++) {
             const remLen = Math.hypot(rem.x, rem.y);
             if (remLen < 1e-4) break;    // nothing left to travel (last position was already tested)
 
@@ -2485,22 +2523,19 @@ class gameObject extends geometryObject {
                 if (other.deleted) continue;
                 const excluded = this.collision.excluded.includes(other);
                 for (const oh of other.hitbox) {
-                    if (!oh.collision || !oh.collision.enabled || skip.has(oh)) continue;
+                    if (!oh.collision || !oh.collision.enabled) continue;
                     for (const th of this.hitbox) {
-                        if (!th.collision || !th.collision.enabled) continue;
-                        let t = Hitbox.timeOfImpact(th, oh, rem.x, rem.y);
+                        if (!th.collision || !th.collision.enabled || skipped(th, oh)) continue;
+                        const t = Hitbox.timeOfImpact(th, oh, rem.x, rem.y, S.deepSkin);
                         if (t === null) continue;
-                        if (t === "touch") {
-                            if (movesIntoContact(th, oh, rem, remLen)) t = 0;
-                            else { skip.add(oh); continue; }
-                        }
+                        if (t === "inside") { addSkip(th, oh); continue; }   // already overlapping: resolution's job
                         if (!best || t < best.t) {
                             // Would processCollisions() resolve this pair (and so stop the object)?
                             const resolves = !excluded &&
                                 this.collision.resolve && other.collision.resolve &&
                                 th.collision.resolve && oh.collision.resolve && oh.collision.solid &&
                                 (this.collision.solid || other.collision.solid);
-                            best = { t, oh, resolves };
+                            best = { t, th, oh, resolves };
                         }
                     }
                 }
@@ -2523,7 +2558,8 @@ class gameObject extends geometryObject {
             this.processCollisions();
             record();
             contacts++;
-            if (!best.resolves) skip.add(best.oh);     // detected; it just doesn't block movement
+            if (best.resolves) blocking++;
+            else addSkip(best.th, best.oh);            // detected; this pair just doesn't block movement
 
             // Spend what is left of the tick on the velocity resolution left us with.
             vel.self.x += vel.x - vxBefore;
@@ -2537,6 +2573,10 @@ class gameObject extends geometryObject {
 
         this._subStepCount = Math.max(1, contacts);
         if (contacts > 0) {
+            // Kept until the next move: scripts run after update() and usually call
+            // processCollisions() again at the END position, which would otherwise
+            // forget a contact made mid-move (a fast bullet that crossed its target).
+            this._ccdHits = { collisions: merged, sides: sideAcc };
             this.collisions = merged;
             Object.keys(sideAcc).forEach((k) => {
                 if (this.collision.sides.hasOwnProperty(k)) this.collision.sides[k] = sideAcc[k];
@@ -2603,6 +2643,7 @@ class gameObject extends geometryObject {
         if (!scene) return false;
         var result = false;
         this.hitbox.forEach(hb => {
+            if (!hb.collision || !hb.collision.enabled) return;
             const bounds = hb.bounds(err);
             
             if(bounds.left < x && 
@@ -2691,6 +2732,8 @@ class gameObject extends geometryObject {
                 if (other.id === this.id || other.deleted || !other.active) return false;
                 if (!other.collision || !other.collision.enabled || !other.collision.solid) return false;
                 return other.hitbox.some((hb) => {
+                    
+                    if (!hb.collision || !hb.collision.enabled || !hb.collision.solid) return false;
                     const ob = hb.bounds(1);
                     return ob.left < swept.right && ob.right > swept.left &&
                         ob.top  < swept.bottom && ob.bottom > swept.top;
@@ -2759,6 +2802,8 @@ class gameObject extends geometryObject {
         let lowestHitboxIndex = -1;
 
         this.hitbox.forEach((hb, index) => {
+            // Disabled / non-solid / non-resolving hitboxes (melee boxes, sensors) can't be the feet.
+            if (!hb.collision || !hb.collision.enabled || !hb.collision.solid || !hb.collision.resolve) return;
             let bounds = hb.bounds();
             if (bounds.bottom > lowestY) {
                 lowestY = bounds.bottom;
@@ -2787,12 +2832,13 @@ class gameObject extends geometryObject {
                 
                 other.hitbox.forEach((otherHitbox) => {
                     if (!otherHitbox.collision || !otherHitbox.collision.enabled) return;
+                    const _collisionalData = [
+                        thisHitbox.collidesWith(otherHitbox, 1.0,true),
+                        otherHitbox.collidesWith(thisHitbox, 1.0,true)];
 
                     if (thisHitbox.collidesWith(otherHitbox, 1.0)) {
                         
-                        collisions.push({
-                            thisHitbox, otherHitbox, other, index, excluded
-                        });
+                        
 
                         let sides = thisHitbox.getCollisionSides();
 
@@ -2808,7 +2854,9 @@ class gameObject extends geometryObject {
                         });
                         if (sides.includes("embedded")) this.collision.sides.embedded = true;
 
-                        if (index === lowestHitboxIndex && sides.includes("bottom") && !excluded && thisHitbox.collision.solid) {
+                        if (index === lowestHitboxIndex && sides.includes("bottom") && !excluded && thisHitbox.collision.solid &&
+                            this.collision.resolve && other.collision.resolve &&
+                            thisHitbox.collision.resolve && otherHitbox.collision.resolve && otherHitbox.collision.solid) {
                             if (this.collision.solid) {
                                 if (other.grounded) {
                                     this.grounded = true;
@@ -2819,6 +2867,22 @@ class gameObject extends geometryObject {
                                 }
                             }
                         }
+                        const cross = ['right','left','top','bottom'];
+                        let crossed = {
+                            left:false,
+                            right:false,
+                            top:false,
+                            bottom:false,
+                        };
+                        Object.keys(_collisionalData[0]).forEach((side,index) => {
+                            //oppisite side of the current side
+                            let _oot = _collisionalData[1][cross[index]];
+                            crossed[side] = _collisionalData[0][side] && _oot;
+                        });
+                        collisions.push({
+                            thisHitbox, otherHitbox, other, index, excluded,
+                            sides: crossed,
+                        });
                     }
                 });
             });
@@ -2870,6 +2934,19 @@ class gameObject extends geometryObject {
                     }
                 }
             }
+        }
+
+        // Contacts the swept move made earlier this tick (see _ccdMove) still count,
+        // even though the object may no longer be touching them at its end position.
+        if (this._ccdHits) {
+            this._ccdHits.collisions.forEach((c) => {
+                if (c.other.deleted) return;
+                if (collisions.some((m) => m.thisHitbox === c.thisHitbox && m.otherHitbox === c.otherHitbox)) return;
+                collisions.push(c);
+            });
+            Object.keys(this._ccdHits.sides).forEach((k) => {
+                if (this.collision.sides.hasOwnProperty(k)) this.collision.sides[k] = true;
+            });
         }
         this.collisions = [...collisions];
     }
@@ -3885,23 +3962,39 @@ class Entity extends gameObject {
                     protection:0.1,
                     decay:0.12,
                 },
-                applyDamage(n){
+                applyDamage(n,displayObject){
+                    let dmg = {
+                        shield:-1,
+                        health:0,
+                        timeStamp:new Date().getTime(),
+                        object:this,
+                    };
                     if(this.shield.value > 0){
                         if(this.shield.value - n*(1+this.shield.decay) >= 0){
-                            this.shield.value -= Number(pad(n*(1+this.shield.decay),1,2));
-                            this.health -= Number(pad(n*(1-this.shield.protection),1,2));
+                            dmg.shield = Number(pad(n*(1+this.shield.decay),1,2));
+                            dmg.health = Number(pad(n*(1-this.shield.protection),1,2));
+                            this.shield.value -= dmg.shield;
+                            this.health -= dmg.health;
                         }else{
                             //total damage - damage needed to break shield * damage taken with shield up
                             let total = (this.shield.value/(1+this.shield.decay))*(1-this.shield.protection);
+                            dmg.shield = this.shield.value;
                             this.shield.value = 0;
-                            this.health -= Number(pad(total,1,2));
+                            dmg.health = Number(pad(total,1,2));
+                            //console.log('had shield');
+                            this.health -= dmg.health;
                             this.health = Number(pad(this.health,1,2));
                         }
                     }else{
                         this.health -= n;
+                        dmg.health = n;
                     }
                     this.damaged = true;
                     if(this.damageFlash)this.damageFlash();
+                    if(typeof displayObject == 'object' && Array.isArray(displayObject)){
+                        displayObject.unshift(dmg);
+                    }
+                    
                     return {
                         health:this.health,
                         shield:this.shield.value,
@@ -3959,7 +4052,7 @@ class Entity extends gameObject {
             return {
                     speed:{
                     max:10,
-                    value:1.5,
+                    value:2.5,
                     sprint:15,
                 },
                 jumpHeight(){ return -this.transform.size().y}
@@ -4007,19 +4100,19 @@ class Entity extends gameObject {
                         
                         if(self.hitbox[0].collidesWith(target.hitbox[0],self.attack.range)){
                             
-                            
-                            if(typeof target.applyDamage != 'function'){
-                                target.health -= self.attack.damage;
-                                //return true;
-                            }else {
-                                target.applyDamage(self.attack.damage);
-                                //return true;
-                            }
-                            //return 'error';
                             self.isAttacking = true;
                             setTimeout(() => {
                                 self.isAttacking = false;
                             }, 1/self.attack.speed);
+                            if(typeof target.applyDamage != 'function'){
+                                target.health -= self.attack.damage;
+                                return self.attack.damage;
+                            }else {
+                                let _data = target.applyDamage(self.attack.damage);
+                                return _data;
+                            }
+                            //return 'error';
+                            
                         }
                         return false;
                     },1/self.attack.speed);
@@ -4029,11 +4122,94 @@ class Entity extends gameObject {
             };
             
             return pck;
+        },
+        inventory:()=>{
+          let pck = {
+            inventory:{},
+          };
+          pck.inventory.slots = 36;
+          pck.inventory.actionbar = {
+            slots:5,
+          };
+          pck.inventory.activeItem = 0;
+
+          for(let i = 0;i<pck.inventory.actionbar.slots;i++){
+            pck.inventory.actionbar[i] = null;
+          }
+
+          
+
+          pck.inventory.append = (e, _slot = pck.inventory.length) => {
+            const max = pck.inventory.slots;
+            var items = pck.inventory.length;
+            let returnItem;
+            if(_slot == pck.inventory.length){
+                if(items+1 <= max){
+                    pck.inventory.unshift(e);
+                    returnItem = e;
+                    new Message(`PlayerAction|InventoryPush: successfully pushed item to inventory: {${pck.inventory.length}}`);
+                    return returnItem;
+                }else{
+                    const popped = pck.inventory.pop();
+                    returnItem = popped;
+                    pck.inventory.unshift(e);
+                    new Message(`PlayerAction|InventoryPush: pushed new item to inventory, but removed last item in inventory: ${popped}`);
+                    return returnItem;
+                }
+            }else{
+                if(pck.inventory[_slot] != undefined){
+                    pck.inventory[_slot] = e;
+                    returnItem = e;
+                    new Message(`PlayerAction|InventorySlot: successfully set item to inventory slot: {${_slot}}`);
+                    return returnItem;
+                } else {
+                    pck.inventory[_slot] = e;
+                    returnItem = e;
+                    new Message(`PlayerAction|InventorySlot: inventory slot {${_slot}} previously didn't exist, inventory: {${pck.inventory.length}}`);
+                    return returnItem;
+                }
+            }
+            
+          };
+          pck.inventory.getActiveItem = ()=>{
+            try {
+              return pck.inventory.actionbar[pck.inventory.activeItem];
+            } catch(e){
+              return pck.inventory.actionbar[0];
+            }
+          };
+          pck.inventory.push = undefined;
+          pck.inventory.actionbar.equip = (inventorySlot, actionbarSlot) => {
+            try {
+              const target = pck.inventory[inventorySlot-1];
+              pck.inventory.actionbar[actionbarSlot-1] = target;
+              return {
+                slot:actionbarSlot,
+                item:target
+              };
+            } catch(e){
+              new Message(`PlayerAction|ActionbarPush: failed to find valid item in inventory slot: '${inventorySlot}' avalible slots: ${pck.inventory.length}`);
+              return false;
+            }
+          }
+          Object.defineProperty(pck.inventory, 'length', {
+            get (){
+                const keys = Object.keys(this);
+                return keys.filter(e => {
+                    let item = Number(e);
+                    //console.log(item, item == NaN);
+                    return !isNaN(item);
+                }).length;
+            }
+          });
+          
+          return pck;
         }
     };
     constructor(x, y, w, h, id, ...scenes) {
         super(x, y, w, h, ...scenes);
         this.id = id;
+        this.name = id;
         this.transform.velocity.max = { x: 50, y: 2000 };
         this.transform.velocity.decay = 0.89;
         this.physicsToggles.velocityDecay = true;
