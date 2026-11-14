@@ -88,6 +88,10 @@ class Transform {
 // used everywhere in scripts. Each accepts either no args (get)
 // or a mode string + values (set/add/multiply/power).
 class geometryObject extends shell {
+    constructor(x,y,w,h,r=0){
+        super();
+        this.transform = new Transform(x,y,w,h);
+    }
     /**
      * The position everything should READ (drawing, hitbox world
      * position, debug overlays, position()). For most objects this is just
@@ -97,7 +101,9 @@ class geometryObject extends shell {
      * Writes always go to transform.position.
      */
     get effectivePosition() { return this.transform.position; }
-
+    get rotation(){ return this.transform.rotation; }
+    get rotationMode(){ return this.transform.rotationMode; }
+    
     position(...argss) {
         if (argss.length <= 0) return this.effectivePosition;
         else {
@@ -175,10 +181,200 @@ class geometryObject extends shell {
         let y = obj1.y == obj2.y;
         return x && y;
     }
+
+    update(dt = 1/60){
+
+        const vel = this.velocity();
+        const pos = this.position();
+
+        vel.self.x = (vel.x + (vel.inherited?.x || 0));
+        vel.self.y = (vel.y + (vel.inherited?.y || 0));
+
+        if (Math.abs(vel.x) < 0.0001) vel.x = 0;
+        if (Math.abs(vel.y) < 0.0001) vel.y = 0;
+
+        pos.x += vel.self.x*dt;
+        pos.y += vel.self.y*dt;
+
+        // let idx = gameObject.objects.indexOf(this);
+        // if (idx > -1) gameObject.objects[idx] = this;
+        // else gameObject.objects.push(this);
+
+        //this.updateParentScene();
+    }
 }
 
 
 
+class Renderer {
+    constructor(obj,type,...args){
+        const validShapes = {
+            rect:'rectangle',
+            rectangle:'rectangle',
+            square:'square',
+            triangle:'triangle',
+            circle:'circle',
+            ellipse:'ellipse'
+        };
+        if(typeof type == 'string'){
+            type = type.toLowerCase();
+            if(type == 'basic'){
+                this.mode = 'basic';
+                //parameters: color, shape, outlineData {parameterType: array, number, color}
+                this.color = args[0];
+                this.shape = validShapes[args[1].toLowerCase()]??'rectangle';
+                this.outline =  ((typeof args[2] == 'object' && Array.isArray(args[2])) ? args[2] : 
+                    ((args[3] != undefined) ? [args[2],args[3]] : [0.1,0]));
+                this.radius = 0;
+            }else if(type == 'sprite'){
+                this.mode ='texture';
+                this.texture = args[0];
+                this.animations = [];
+                this.frame = 0;
+
+            }
+        }
+        this.visible = true;
+        this.debug = {
+            active:false,
+            color:"#37ff29",
+            center:true,
+            velocity:true,
+        };
+        //give parent object new method
+        obj.constructor.prototype.render = function(){
+            
+            if (!this.active) return;
+            const pos = this.effectivePosition;
+            const scale = this.transform.scale;
+            const vel = this.transform.velocity;
+            const renderer = this;
+            const settings = this.mode;
+            
+            if (renderer.visible) {
+                push();
+                fill(color(renderer.color));
+                translate(pos.x, pos.y);
+                
+                if (Array.isArray(renderer.outline)) {
+                    stroke(renderer.outline[1]);
+                    strokeWeight(renderer.outline[0]);
+                } else noStroke();
+                
+                if (settings == 'basic') {
+                    // The body turns with transform.rotation (about its center).
+                    push();
+                    rotate(this.transform.rotation);
+                    switch (renderer.shape) {
+                        case "rect":
+                        case "rectangle":
+                            rectMode(CENTER);
+                            rect(0, 0, scale.x, scale.y, renderer.radius || 0);   // radius: optional rounded corners
+                            break;
+                        case "triangle":
+                            triangle(
+                                pos.ax || -scale.x / 2, pos.ay || scale.y / 2,
+                                pos.bx || 0, pos.by || -scale.y / 2,
+                                pos.cx || scale.x / 2, pos.cy || scale.y / 2
+                            );
+                            break;
+                        case "circle":
+                        case "ellipse":
+                            ellipse(0, 0, scale.x, scale.y);
+                            break;
+                    }
+                    pop();
+                }
+
+                
+
+                pop();
+            }
+            // Debug rendering (hitbox outlines, sides, velocity arrows).
+            if (renderer.debug.active || renderer.debug) {
+                let d = renderer.debug;
+                
+
+                
+
+                if (d.velocity) {
+                    let pos = this.effectivePosition;
+                    //let vel = obj.transform.velocity;
+
+                    push();
+                    translate(pos.x, pos.y);
+
+                    // Raw velocity arrow.
+                    push();
+                    stroke("purple");
+                    strokeWeight(2);
+                    let velMag = Math.sqrt(vel.x * vel.x + vel.y * vel.y);
+                    let minLength = 4;
+                    let maxLength = 50;
+                    let arrowSize = 3;
+                    let arrowAngle = 0.25;
+                    if (velMag > 0.01) {
+                        let angle = Math.atan2(vel.y, vel.x);
+                        let logScale = Math.log(1 + velMag) / Math.log(1 + 100);
+                        let len = minLength + (maxLength - minLength) * logScale;
+                        let endX = Math.cos(angle) * len;
+                        let endY = Math.sin(angle) * len;
+
+                        line(0, 0, endX, endY);
+                        line(endX, endY, endX - arrowSize * Math.cos(angle - arrowAngle), endY - arrowSize * Math.sin(angle - arrowAngle));
+                        line(endX, endY, endX - arrowSize * Math.cos(angle + arrowAngle), endY - arrowSize * Math.sin(angle + arrowAngle));
+
+                        noStroke();
+                        fill("purple");
+                        textSize(11);
+                        text("v: " + velMag.toFixed(1) + " px/s", endX + 5, endY - 5);
+                    }
+                    pop();
+
+                    // Self (total) velocity arrow.
+                    push();
+                    stroke("cyan");
+                    strokeWeight(2);
+                    let trueVelMag = Math.sqrt(vel.self.x * vel.self.x + vel.self.y * vel.self.y);
+                    if (trueVelMag > 0.01) {
+                        let angle = Math.atan2(vel.self.y, vel.self.x);
+                        let logScale = Math.log(1 + trueVelMag) / Math.log(1 + 100);
+                        let len = minLength * 1.5 + (maxLength * 1.5 - minLength * 1.5) * logScale;
+                        let endX = Math.cos(angle) * len;
+                        let endY = Math.sin(angle) * len;
+
+                        line(endX, endY, endX - arrowSize * Math.cos(angle - arrowAngle), endY - arrowSize * Math.sin(angle - arrowAngle));
+                        line(endX, endY, endX - arrowSize * Math.cos(angle + arrowAngle), endY - arrowSize * Math.sin(angle + arrowAngle));
+
+                        noStroke();
+                        fill("green");
+                        textSize(11);
+                    }
+                    pop();
+
+                    pop();
+                }
+            }
+        }
+    }
+    get frames(){
+        return this.animations.length;
+    }
+}
+
+
+class genericObject extends geometryObject {
+    constructor(shape,x,y,w,h,...scenes){
+        super(x,y,w,h);
+        
+        this.scenes = scenes??[];
+        
+        
+        this.rendering = new Renderer(this,'basic',color(255),shape,[0.1,0]);
+        this.push(this);
+    }
+    
+}
 
 
 
@@ -2033,12 +2229,12 @@ class gameObject extends geometryObject {
     }
 
     constructor(x, y, w, h, ...scenes) {
-        super();
+        super(x,y,w,h);
         gameObject.init();
         this.id = "MALE:gameObject[" + Math.random().toString(36).substring(2) + "]";
         this.superId = this.id;
         this.deleted = false;
-        this.transform = new Transform(x, y, w, h);
+        //this.transform = new Transform(x, y, w, h);
         this.x = x;
         this.y = y;
         this.tags = [];
@@ -2136,8 +2332,12 @@ class gameObject extends geometryObject {
             draw: {
                 hitbox: false,
                 shape: "rect",
-                texture: null,
-                presets: [],
+                texture: null, // fire path / folder path within 'Assests'
+                animations: {
+                    /*
+                        propertyName:[\-animationFrames / File Paths-\]
+                    */
+                },
             },
             color: "white",
             visible: true,
@@ -5030,3 +5230,85 @@ class uiButton extends UI {
     Game Notification Class
 
 */
+
+class ButtonEvent {
+    static validEvent(e){
+        let i = ['hover','pressed','clicked'];
+        if(i.includes(e.toLowerCase())){
+            return i[i.indexOf(e.toLowerCase())];
+        }
+    }
+    constructor(eventName,fn){
+        const eve = ButtonEvent.validEvent(eventName);
+        if(!eve)throw 'ButtonEvent_object|EventName: invalid event name!'
+        this.event = eve;
+        this.run = fn;
+    }
+    exe(obj){
+        return fn(obj);
+    }
+}
+
+class Button extends geometryObject {
+    static getEvents = {
+        hover:(pos = World.mouse, obj = this)=>{
+            let dim = obj.size();
+            let dip = obj.position();
+            return  (pos.x > dip.x-dim.x/2) &&
+                    (pos.x < dip.x+dim.x/2) &&
+                    (pos.y > dip.y-dim.y/2) &&
+                    (pos.y < dip.y-dim.y/2)
+        },
+        pressed:(pos = World.mouse, obj = this)=>{
+            let dim = obj.size();
+            let dip = obj.position();
+            return  (pos.x > dip.x-dim.x/2) &&
+                    (pos.x < dip.x+dim.x/2) &&
+                    (pos.y > dip.y-dim.y/2) &&
+                    (pos.y < dip.y-dim.y/2) && pos.pressed
+        },
+        clicked:(pos = World.mouse, obj = this)=>{
+            let dim = obj.size();
+            let dip = obj.position();
+            return  (pos.x > dip.x-dim.x/2) &&
+                    (pos.x < dip.x+dim.x/2) &&
+                    (pos.y > dip.y-dim.y/2) &&
+                    (pos.y < dip.y-dim.y/2) && pos.clicked
+        },
+        
+    };
+    constructor(x,y,w,h,txt,...scenes){
+        super(x,w,y,h,5);
+        this.rendering = new Renderer(this,'basic','white','rect');
+        this.rendering.colors = {
+            hover:new Blender('#000',0.25),
+            pressed:new Blender('#000',0.75),
+            clicked:new Blender('#000',0.5),
+            disabled:new Blender('#808080',0.6)
+        };
+        this.events = {
+            get hover(){
+                return Button.getEvents.hover(World.mouse,this);
+            },
+            get pressed(){
+                return Button.getEvents.pressed(World.mouse,this);
+            },
+            get clicked(){
+                return Button.getEvents.clicked(World.mouse,this);
+            }
+        };
+        this.onEvent = {
+            clicked:[],
+            pressed:[],
+            hover:[],
+        };
+    }
+}
+
+
+
+
+
+
+
+

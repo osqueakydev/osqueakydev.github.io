@@ -667,6 +667,7 @@ const levelMap = [
     new Level([6],[15]),
     new Level([12,5],[5,7],[0,20],[5,5]),
     new Level([7,8,3],[6,15,20],[0,12,0],[0,5,10]),
+    new Level([0,5,2,8,0,0,0,0,0,1],[6,15,20,25],[0,12,20,5],[0,5,10,7]),
 ];
 
 function newEnemy(x, y, w, h, lvl) {
@@ -704,6 +705,39 @@ function newEnemy(x, y, w, h, lvl) {
                 shield:0,
             };
             e.rendering.color = '#400642';
+        break;
+        case 10:
+            e.rendering.color = 'red';
+            e.boss = {
+                phases:[
+                    (r)=>{
+                        r.health = 200;
+                        r.shield = {
+                            value:100, 
+                            protection:1, //block 100%
+                            decay:-0.5, //only take half the damage on shield
+                        };
+                    },
+                    (r)=>{
+                        r.health = 400;
+                        r.shield = {
+                            value:50, 
+                            protection:0.75, 
+                            decay:0, 
+                        };
+                    }
+                ],
+                ammo:100,
+                health:50,
+                shield:40,
+                phase:-1,
+            };
+            e.speed.max = 7;
+            e.speed.value = 1;
+            e.speed.sprint = 12;
+            e.attack.damage = 40;
+            e.attack.range = 12;
+            e.attack.speed = 0.75;
         break;
     }
     const _enemyShield = [0,20,35,50,30,10];
@@ -799,14 +833,34 @@ function newEnemy(x, y, w, h, lvl) {
         self.velocity("set", limit(vel.x, -self.speed.max, self.speed.max), vel.y);
     }
     e.scripts.push((self)=>{
-            if(self.health <= 0){
-                if(game.level.ammo.length > 0)player.weapon.ammo += game.level.ammo[lvl];
-                if(game.level.health.length > 0)player.health += isNaN(game.level.health[lvl]) ? 0 : game.level.health[lvl];
-                if(game.level.shield.length > 0){
-                    player.shield.value += isNaN(game.level.shield[lvl]) ? 0 : game.level.shield[lvl];
-                    //console.log(isNaN(game.level.shield[lvl]) ? 0 : game.level.shield[lvl]);
+            if(self.boss){
+                if(self.boss.phase < 0){
+                    self.boss.phases[0](self);
+                    self.boss.phase += 1;
                 }
-                self.delete();
+            }
+            if(self.health <= 0){
+                if(self.boss){
+                    self.boss.phase += 1;
+                    if(self.boss.phase <= self.boss.phases.length-1){
+                        self.boss.phases[self.boss.phase](self);
+                    }else if(self.boss.phase > self.boss.phases.length-1){
+                        player.weapon.ammo += self.boss.ammo;
+                        player.health += self.boss.health;
+                        
+                        player.shield.value += self.boss.shield;
+                        //console.log(isNaN(game.level.shield[lvl]) ? 0 : game.level.shield[lvl]);
+                        self.delete();
+                    }
+                }else{
+                    if(game.level.ammo.length > 0)player.weapon.ammo += game.level.ammo[lvl]??0;
+                    if(game.level.health.length > 0)player.health += isNaN(game.level.health[lvl]) ? 0 : game.level.health[lvl];
+                    if(game.level.shield.length > 0){
+                        player.shield.value += isNaN(game.level.shield[lvl]) ? 0 : game.level.shield[lvl];
+                        //console.log(isNaN(game.level.shield[lvl]) ? 0 : game.level.shield[lvl]);
+                    }
+                    self.delete();
+                }
             }
             const pos = self.position();
             const vel = self.velocity();
@@ -821,10 +875,12 @@ function newEnemy(x, y, w, h, lvl) {
                         if(self.vampire && _attacked != false){
                             
                             if(typeof _attacked == 'object'){
-                                if(_attacked.health >= 0)
+                                console.log(self.vampire,_attacked,self.health);
+                                if(_attacked.health >= 0){
                                     self.health += _attacked.health*self.vampire.health;
-                                self.shield.value += _attacked.shield*self.vampire.shield;
-                            } else self.health += _attacked*self.vampire.health;
+                                }
+                                if(_attacked.shield) if(_attacked.shield.value) self.shield.value += _attacked.shield*self.vampire.shield;
+                            }
                         }
                     }
                     //console.log('trying attack');
@@ -883,6 +939,7 @@ function waveStart(){
         
         level.started = true;
     }else{
+        //console.log(level.remaining());
         if(level.remaining() <= 0)currentLevel+=1;
     }
 }
@@ -890,7 +947,7 @@ function waveStart(){
 const gameSettings = {
     friendlyFire:false,
     friendlyDamage:1, //percent
-    immortal:true,
+    immortal:false,
 };
 
 const game = {
@@ -965,11 +1022,13 @@ const _triggers = {
 };
 
 
+
 const player = new Player(200,200, 20,30,'player1','play');
 player.physicsToggles.friction = true;
 player.rendering.color = '#23b306';
 player.setGravityObject();
 //player.rendering.debug.active = true;
+
 player.melee = {
     range:37,
     damage:40,
@@ -1189,6 +1248,7 @@ function arsonalDisplay(){
 
 const damageDisplayMode = 'stack';
 const damageDisplayTime = 1500;
+
 function playerUI(){
 
 
@@ -1225,12 +1285,13 @@ function playerUI(){
         const size = e.size();
         translate(pos.x,pos.y-size.y*1.15);
         let __eWidth = map(e.health,0,100,0,45);
-        let _enemyColorMesh = map(__eWidth,0,35,0,1);
+        let _enemyColorMesh = map(__eWidth,0,45,0,1);
         fill('#818181');
         rect(0,0,45,5);
-        fill(new Blender('#66ff00',_enemyColorMesh).actualize('#ff0000'));
+        let __ecl = new Blender('#66ff00',_enemyColorMesh).actualize('#ff0000');
+        fill(e.health <= 100 ? __ecl : '#f767cc');
         noStroke();
-        rect(0,-0.5,__eWidth,4);
+        rect(0,-0.5,limit(__eWidth,0,45),4);
         //shields
         if(e.shield.value > 0){
             let __eShieldWidth = map(e.shield.value,0,e.shield.max,0,45);
@@ -1257,7 +1318,7 @@ function playerUI(){
         if(damageDisplayMode == 'stack'){
             m.forEach((e,i) => {
                 
-                if(e.timeStamp + damageDisplayTime > now && e.health > 0){
+                if(e.timeStamp + damageDisplayTime > now && e.health >= 0){
                     push();
                     const pos = e.object.position();
                     const size = e.object.size();
@@ -1621,15 +1682,18 @@ function _gameReset(){
 
 
 
-
+const pauseMenu = {
+    resume:new uiButton(200,200,130,15,'67','667'),
+};
 
 
 new Scene('play', '#4e4e8d', ()=>{
     if (World.controller && World.controller.connected) {
         World.controller.update();
     }
+    
     if(player.health > 0)waveStart();
-    else _gameReset();
+    else if(!gameSettings.immortal)_gameReset();
     let gg = keyboard.getKey('shift');
     push();
     translate(world.camera.x,world.camera.y);
@@ -1638,9 +1702,11 @@ new Scene('play', '#4e4e8d', ()=>{
     if(getInput('key@e:held')>0)console.log(67);
     findSlope(player.x,player.y,mouse.x,mouse.y);
     
-    
-    playerUI();
-    
+    if(!Scene.getScene('play').pause){
+        playerUI();
+    }else{
+
+    }
 
 });
 
@@ -1676,7 +1742,8 @@ new Scene('menu',70,()=>{
     //controls and levels info
     colorText(`3 Waves\nControls: \nWASD + Space: movement \nShift: sprint \nLeft Click: shoot \nRight Click: melee \nR: reload \nQ: toggle fire mode \nY: arsonal display panel \n\n{While Arsonal is Open} \nUp and Down Arrow: switch weapons`,200,200);
     pop();
-
+    
+    
     if(mainMenu.start.events.clicked)
         Scene.setScene('play');
 });

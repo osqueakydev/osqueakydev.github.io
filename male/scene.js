@@ -84,8 +84,9 @@ class Scene extends shell{
   // so they only ever produce updates at the configured tick rate.
   static tick(deltaTime = 1/60){
     if(!Scene.started)return;
+    
     let active = Scene.getActiveScene();
-
+    if(active.pause)return;
     [active.objects, active.uiObjects].forEach(list => {
       list.slice().forEach(o => {
         if(o.deleted) {
@@ -216,6 +217,7 @@ class Scene extends shell{
     this.tags = [];
     this.activeTime = 0;
     this.startTime = -1;
+    this.pause = false;
     this.scripts = [...scripts];
     this.push(this);
     if(Scene.scenes)Scene.scenes.push(this);
