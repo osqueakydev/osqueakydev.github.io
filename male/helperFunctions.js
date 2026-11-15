@@ -1096,3 +1096,96 @@ Object.defineProperty(Object.prototype, 'all', {
 //     writable: true,
 //     configurable: true
 // });
+
+
+
+
+
+
+/* ------------------------------------------------------------------
+ * formatTime(value, outputMode, inputMode)
+ *
+ *   value      - the number to convert
+ *   outputMode - the LARGEST unit to display (the format's leading unit)
+ *   inputMode  - the unit `value` is expressed in
+ *
+ *   formatTime(300, 'minutes', 'seconds') -> "5:00"
+ *   formatTime(300, 'seconds', 'seconds') -> "300"
+ *   formatTime(300, 'hours',   'seconds') -> "0:05:00"
+ *   formatTime(345, 'hours',   'seconds') -> "0:05:45"
+ *   formatTime(5.5, 'minutes', 'minutes') -> "5:30"
+ * ------------------------------------------------------------------ */
+
+// Every unit expressed in milliseconds (aliases included)
+const TIME_UNITS = {
+  millisecond: 1, milliseconds: 1, ms: 1,
+  second: 1000, seconds: 1000, sec: 1000, secs: 1000, s: 1000,
+  minute: 60000, minutes: 60000, min: 60000, mins: 60000, m: 60000,
+  hour: 3600000, hours: 3600000, hr: 3600000, hrs: 3600000, h: 3600000,
+  day: 86400000, days: 86400000, d: 86400000,
+  week: 604800000, weeks: 604800000, w: 604800000,
+};
+
+// Units used to build the colon-separated display, largest -> smallest.
+// (Seconds are handled separately as the final part.)
+const BREAKDOWN = [
+  ['week',   604800000],
+  ['day',    86400000],
+  ['hour',   3600000],
+  ['minute', 60000],
+];
+
+function formatTime(value, outputMode = 'seconds', inputMode = 'milliseconds') {
+  if (typeof value !== 'number' || !isFinite(value)) {
+    throw new TypeError('value must be a finite number');
+  }
+
+  const inUnit  = TIME_UNITS[String(inputMode).toLowerCase()];
+  const outUnit = TIME_UNITS[String(outputMode).toLowerCase()];
+  if (!inUnit)  throw new Error(`Unknown input mode: ${inputMode}`);
+  if (!outUnit) throw new Error(`Unknown output mode: ${outputMode}`);
+
+  const totalMs = value * inUnit;
+  const sign    = totalMs < 0 ? '-' : '';
+  const absMs   = Math.abs(totalMs);
+
+  // --- seconds or milliseconds as the output mode -> plain number ---
+  if (outUnit <= 1000) {
+    return sign + cleanNumber(absMs / outUnit);
+  }
+
+  // --- colon separated display, rounded to whole milliseconds ---
+  let remaining = Math.round(absMs);
+  const startIdx = BREAKDOWN.findIndex(([, unitMs]) => unitMs === outUnit);
+
+  const parts = [];
+  for (let i = startIdx; i < BREAKDOWN.length; i++) {
+    const unitMs = BREAKDOWN[i][1];
+    const whole  = Math.floor(remaining / unitMs);
+    parts.push(whole);
+    remaining -= whole * unitMs;
+  }
+  parts.push(remaining / 1000); // seconds (may have decimals)
+
+  return sign + parts
+    .map((part, i) => {
+      const isFirst = i === 0;
+      const isLast  = i === parts.length - 1;
+      if (isLast) return formatSeconds(part);
+      return isFirst ? String(part) : String(part).padStart(2, '0');
+    })
+    .join(':');
+}
+
+function formatSeconds(seconds) {
+  const rounded  = Math.round(seconds * 1000) / 1000;   // kill float noise
+  const whole    = Math.floor(rounded);
+  const fraction = Math.round((rounded - whole) * 1000);
+  const wholeStr = String(whole).padStart(2, '0');
+  if (fraction === 0) return wholeStr;
+  return wholeStr + '.' + String(fraction).padStart(3, '0').replace(/0+$/, '');
+}
+
+function cleanNumber(n) {
+  return String(Math.round(n * 1e6) / 1e6);
+}

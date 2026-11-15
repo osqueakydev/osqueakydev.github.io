@@ -1,5 +1,5 @@
 // ============================================================
-// MALEngine.js  -  v1.2.0
+// MALEngine.js  -  v1.4.0
 // ------------------------------------------------------------
 // A small, dependency-free graphics + audio asset library.
 //
@@ -60,7 +60,7 @@
     // ============================================
     // CONSTANTS / ENVIRONMENT
     // ============================================
-    const VERSION  = '1.2.0';
+    const VERSION  = '1.4.0';
     const HAS_DOM  = typeof document !== 'undefined';
     const IS_FILE  = HAS_DOM && !!root.location && root.location.protocol === 'file:';
     const DEG2RAD  = Math.PI / 180;
@@ -124,6 +124,25 @@
         throw new graphicsError('No canvas available in this environment.');
     }
 
+    // ---- tint helper ----
+    // Tinting draws the image onto one shared scratch canvas, colours it there, then draws the
+    // scratch onto the real target. (Only used when a tint is set, so normal draws are untouched.)
+    let scratchCanvas = null;
+    function getScratch(w, h) {
+        if (!scratchCanvas) scratchCanvas = makeCanvas(Math.max(w, 64), Math.max(h, 64));
+        if (scratchCanvas.width < w || scratchCanvas.height < h) {
+            scratchCanvas.width  = Math.max(scratchCanvas.width,  w);
+            scratchCanvas.height = Math.max(scratchCanvas.height, h);
+        }
+        return scratchCanvas;
+    }
+    const NO_OVERRIDE = Object.freeze({});
+    // CSS colour strings (and p5.Color objects) that mean "no change" for a multiply tint.
+    function isWhite(c) {
+        const t = String(c).replace(/\s+/g, '').toLowerCase();
+        return t === 'white' || t === '#fff' || t === '#ffffff' || t === '#ffffffff' || t === 'rgb(255,255,255)' || t === 'rgba(255,255,255,1)';
+    }
+
     // ============================================
     // ImageObject
     // ============================================
@@ -157,6 +176,9 @@
             this.flipY     = !!opts.flipY;
             this.smoothing = opts.smoothing !== false;
             this.visible   = opts.visible !== false;
+            this.tint         = opts.tint || null;                         // CSS colour laid over the image (null = none)
+            this.tintStrength = opts.tintStrength != null ? opts.tintStrength : 1;   // 0..1
+            this.tintMode     = opts.tintMode || 'multiply';               // 'multiply' (white = unchanged) | 'overlay' (colour covers the pixels)
 
             // ---- load state ----
             this.src       = typeof source === 'string' ? source : null;
@@ -250,6 +272,18 @@
             return this._render(target, this.x, this.y, this.width, this.height);
         }
 
+        /**
+         * Draw once with some properties overridden - the object itself is not changed, so one
+         * image can be drawn by many owners at once (the game engine does this for textures).
+         * over: any of x, y, width, height, angle, scaleX, scaleY, anchorX, anchorY, alpha,
+         *       flipX, flipY, tint, tintStrength, tintMode. Anything left out uses the object's own value.
+         */
+        drawWith(over = {}, target) {
+            return this._render(target,
+                over.x != null ? over.x : this.x, over.y != null ? over.y : this.y,
+                over.width != null ? over.width : this.width, over.height != null ? over.height : this.height, over);
+        }
+
         /** Draw at a one-off position (and optional size) without changing the object. */
         drawAt(x, y, w, h, target) {
             return this._render(target, x, y, w != null ? w : this.width, h != null ? h : this.height);
@@ -276,60 +310,99 @@
             return this;
         }
 
-        _render(target, x, y, w, h) {
-            if (!this.visible) return this;
+        _render(target, x, y, w, h, over) {
+            const o = over || NO_OVERRIDE;
+            if (!(o.visible != null ? o.visible : this.visible)) return this;
             const t = MAL._resolveTarget(target);
             if (!t) { warnOnce('no-target', 'No drawing target found. Call setDrawTarget(ctx), newCanvas(), or create a p5 canvas first.'); return this; }
 
             // Not usable yet: draw a missing-image marker for failures (so you notice), nothing while loading.
             if (!this.loaded) {
-                if (this.failed && MAL.showMissing) this._drawMissing(t, x, y, w || 32, h || 32);
+                if (this.failed && MAL.showMissing) this._drawMissing(t, x, y, w || 32, h || 32, o);
                 return this;
             }
             this._beforeRender();
             const fr = this._frameRect();
-            if (t.kind === '2d') this._render2d(t.ctx, x, y, w, h, fr);
-            else                 this._renderP5(t.p, x, y, w, h, fr);
+            if (t.kind === '2d') this._render2d(t.ctx, x, y, w, h, fr, o);
+            else                 this._renderP5(t.p, x, y, w, h, fr, o);
             return this;
         }
 
-        _render2d(c, x, y, w, h, fr) {
+        // Reads a property from the override object first, then from this object.
+        _pick(o, k) { return o[k] != null ? o[k] : this[k]; }
+
+        _render2d(c, x, y, w, h, fr, o = NO_OVERRIDE) {
+            const angle = this._pick(o, 'angle'), ax = this._pick(o, 'anchorX'), ay = this._pick(o, 'anchorY');
+            const flipX = o.flipX != null ? o.flipX : this.flipX, flipY = o.flipY != null ? o.flipY : this.flipY;
+            let src = this.element, sx = fr.sx, sy = fr.sy, sw = fr.sw, sh = fr.sh;
+
+            // Tint: colour the image on the scratch canvas, then draw the scratch instead.
+            const tint = o.tint !== undefined ? o.tint : this.tint;
+            const strength = o.tintStrength != null ? o.tintStrength : this.tintStrength;
+            if (tint && strength > 0 && !(isWhite(tint) && (o.tintMode || this.tintMode) === 'multiply')) {
+                const mode = o.tintMode || this.tintMode;
+                const sc = getScratch(sw, sh), g = sc.getContext('2d');
+                g.setTransform(1, 0, 0, 1, 0, 0);
+                g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+                g.clearRect(0, 0, sw, sh);
+                g.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
+                g.globalAlpha = clamp(strength, 0, 1);
+                g.fillStyle = String(tint);
+                if (mode === 'overlay') {
+                    g.globalCompositeOperation = 'source-atop';
+                    g.fillRect(0, 0, sw, sh);
+                } else {
+                    g.globalCompositeOperation = 'multiply';
+                    g.fillRect(0, 0, sw, sh);
+                    g.globalCompositeOperation = 'destination-in';     // multiply paints transparent pixels too: cut them back out
+                    g.globalAlpha = 1;
+                    g.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
+                }
+                g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+                src = sc; sx = 0; sy = 0;
+            }
+
             c.save();
             c.translate(x, y);
-            if (this.angle) c.rotate(this.angle * DEG2RAD);
-            c.scale(this.scaleX * (this.flipX ? -1 : 1), this.scaleY * (this.flipY ? -1 : 1));
-            c.globalAlpha *= this.alpha;
-            c.imageSmoothingEnabled = this.smoothing;
-            c.drawImage(this.element, fr.sx, fr.sy, fr.sw, fr.sh, -this.anchorX * w, -this.anchorY * h, w, h);
+            if (angle) c.rotate(angle * DEG2RAD);
+            c.scale(this._pick(o, 'scaleX') * (flipX ? -1 : 1), this._pick(o, 'scaleY') * (flipY ? -1 : 1));
+            c.globalAlpha *= this._pick(o, 'alpha');
+            c.imageSmoothingEnabled = o.smoothing != null ? o.smoothing : this.smoothing;
+            c.drawImage(src, sx, sy, sw, sh, -ax * w, -ay * h, w, h);
             c.restore();
         }
 
-        // p5 WEBGL fallback (2D p5 canvases take the fast Canvas path above).
-        _renderP5(p, x, y, w, h, fr) {
+        // p5 WEBGL fallback (2D p5 canvases take the fast Canvas path above). Tint here uses p5's own tint().
+        _renderP5(p, x, y, w, h, fr, o = NO_OVERRIDE) {
             const pi = this.toP5Image(p);
             if (!pi) return;
+            const angle = this._pick(o, 'angle'), ax = this._pick(o, 'anchorX'), ay = this._pick(o, 'anchorY');
+            const flipX = o.flipX != null ? o.flipX : this.flipX, flipY = o.flipY != null ? o.flipY : this.flipY;
+            const tint = o.tint !== undefined ? o.tint : this.tint;
             const prevAngleMode = p._angleMode;
             p.push();
             p.angleMode(p.RADIANS || 'radians');
             p.translate(x, y);
-            if (this.angle) p.rotate(this.angle * DEG2RAD);
-            p.scale(this.scaleX * (this.flipX ? -1 : 1), this.scaleY * (this.flipY ? -1 : 1));
+            if (angle) p.rotate(angle * DEG2RAD);
+            p.scale(this._pick(o, 'scaleX') * (flipX ? -1 : 1), this._pick(o, 'scaleY') * (flipY ? -1 : 1));
             p.imageMode(p.CORNER);
-            p.tint(255, this.alpha * 255);
-            p.image(pi, -this.anchorX * w, -this.anchorY * h, w, h, fr.sx, fr.sy, fr.sw, fr.sh);
+            if (tint) { const c = p.color(String(tint)); p.tint(p.red(c), p.green(c), p.blue(c), this._pick(o, 'alpha') * 255); }
+            else p.tint(255, this._pick(o, 'alpha') * 255);
+            p.image(pi, -ax * w, -ay * h, w, h, fr.sx, fr.sy, fr.sw, fr.sh);
             p.pop();
             if (prevAngleMode) p.angleMode(prevAngleMode);
         }
 
-        _drawMissing(t, x, y, w, h) {
+        _drawMissing(t, x, y, w, h, o = NO_OVERRIDE) {
             if (t.kind !== '2d') return;
-            const c = t.ctx;
+            const c = t.ctx, ax = this._pick(o, 'anchorX'), ay = this._pick(o, 'anchorY'), angle = this._pick(o, 'angle');
             c.save();
             c.translate(x, y);
-            c.fillStyle = '#ff00ff'; c.fillRect(-this.anchorX * w, -this.anchorY * h, w, h);
+            if (angle) c.rotate(angle * DEG2RAD);
+            c.fillStyle = '#ff00ff'; c.fillRect(-ax * w, -ay * h, w, h);
             c.fillStyle = '#000';
-            c.fillRect(-this.anchorX * w, -this.anchorY * h, w / 2, h / 2);
-            c.fillRect(-this.anchorX * w + w / 2, -this.anchorY * h + h / 2, w / 2, h / 2);
+            c.fillRect(-ax * w, -ay * h, w / 2, h / 2);
+            c.fillRect(-ax * w + w / 2, -ay * h + h / 2, w / 2, h / 2);
             c.restore();
         }
 
@@ -375,6 +448,7 @@
             return { x: this.x, y: this.y, angle: this.angle, scaleX: this.scaleX, scaleY: this.scaleY,
                      anchorX: this.anchorX, anchorY: this.anchorY, alpha: this.alpha, flipX: this.flipX,
                      flipY: this.flipY, smoothing: this.smoothing, visible: this.visible,
+                     tint: this.tint, tintStrength: this.tintStrength, tintMode: this.tintMode,
                      width: this._w, height: this._h };
         }
 
@@ -558,23 +632,36 @@
         constructor(owner, el, opts) {
             this.owner   = owner;
             this.element = el;
-            this.volume  = opts.volume != null ? opts.volume : 1;
-            this.loop    = opts.loop != null ? opts.loop : owner.loop;
-            this.rate    = opts.rate != null ? opts.rate : owner.rate;
+            this._volume = clamp(opts.volume != null ? opts.volume : 1, 0, 1);
+            this._loop   = opts.loop != null ? !!opts.loop : null;      // null = follow the sound's own setting, live
+            this._rate   = opts.rate != null ? opts.rate : null;        // null = follow the sound's own setting, live
             this.onend   = opts.onend || null;
             this.state   = 'idle';            // idle | playing | paused | ended
             this._opts   = opts;
             this._cancelFade = null;
         }
 
+        // volume / loop / rate update the audio instantly - the playback is never restarted.
+        // loop and rate follow the owning sound until you set them on the voice itself.
+        get volume() { return this._volume; }
+        set volume(v) { this._volume = clamp(v, 0, 1); this._apply(); }
+        get loop() { return this._loop != null ? this._loop : this.owner.loop; }
+        set loop(b) { this._loop = !!b; this._apply(); }
+        get rate() { return this._rate != null ? this._rate : this.owner.rate; }
+        set rate(r) { this._rate = r; this._apply(); }
+
         get isPlaying()   { return this.state === 'playing'; }
         get currentTime() { return this.element.currentTime; }
         get duration()    { return this.element.duration; }
 
+        // Pushes every live setting (volume, mute, loop, speed) to the <audio> element.
         _apply() {
             const el = this.element;
-            el.volume = clamp(this.volume * this.owner.volume * MAL._volumeFor(this.owner.group), 0, 1);
+            el.volume = clamp(this._volume * this.owner.volume * MAL._volumeFor(this.owner.group), 0, 1);
             el.muted  = !!(this.owner.muted || MAL.muted);
+            const lp = this.loop, rt = this.rate;
+            if (el.loop !== lp) el.loop = lp;
+            if (el.playbackRate !== rt) el.playbackRate = rt;
         }
 
         _start() {
@@ -583,8 +670,6 @@
             MAL._voices.add(this);
             this.owner._claims.set(el, this);
             try { el.currentTime = o.start || 0; } catch (e) { /* metadata not ready yet; plays from 0 */ }
-            el.loop = this.loop;
-            el.playbackRate = this.rate;
             this._apply();
             el.onended = () => this._end(true);
             let p;
@@ -619,14 +704,25 @@
             return this;
         }
         seek(t)       { try { this.element.currentTime = t; } catch (e) { /* ignore */ } return this; }
-        setVolume(v)  { this.volume = clamp(v, 0, 1); this._apply(); return this; }
-        setRate(r)    { this.rate = r; this.element.playbackRate = r; return this; }
+        setVolume(v)  { this.volume = v; return this; }
+        setRate(r)    { this.rate = r; return this; }
+        setLoop(b)    { this.loop = b; return this; }
+
+        /** Change several settings at once, live: { volume, rate, loop, onend }. The playback keeps going from where it is. */
+        adjust(o = {}) {
+            if (o.volume != null) this._volume = clamp(o.volume, 0, 1);
+            if (o.rate   != null) this._rate = o.rate;
+            if (o.loop   != null) this._loop = !!o.loop;
+            if (o.onend  !== undefined) this.onend = o.onend;
+            this._apply();
+            return this;
+        }
 
         /** Fade this voice's volume to `v` over `seconds`; optionally stop when done. */
         fadeTo(v, seconds, stopAtEnd = false) {
             if (this._cancelFade) this._cancelFade();
-            this._cancelFade = tween(this.volume, v, seconds,
-                (x) => { this.volume = x; this._apply(); },
+            this._cancelFade = tween(this._volume, v, seconds,
+                (x) => { this.volume = x; },
                 () => { this._cancelFade = null; if (stopAtEnd) this.stop(); });
             return this;
         }
@@ -644,19 +740,24 @@
      * opts: name, volume (0..1), loop, rate, group ('sfx' default, 'music' ...),
      *       pool (max overlapping plays; default 4, music default 1),
      *       onBusy ('steal' = restart the oldest voice [default] | 'ignore'),
+     *       livePlayer (true = one playback only: play() while it is playing never stacks or
+     *                   restarts it - it just applies the new settings live),
      *       crossOrigin, onload(snd), onerror(snd, err)
      *
      * play() returns a SoundVoice (or null if it could not start).
      */
     class SoundObject {
         constructor(src, opts = {}) {
+            this._elements = [];          // pooled <audio> elements
+            this._claims  = new Map();    // element -> SoundVoice currently using it
             this.name     = opts.name || null;
-            this.group    = opts.group || 'sfx';
-            this.volume   = opts.volume != null ? opts.volume : 1;
-            this.loop     = !!opts.loop;
-            this.rate     = opts.rate != null ? opts.rate : 1;
-            this.muted    = false;
-            this.poolSize = opts.pool != null ? opts.pool : (this.group === 'music' ? 1 : 4);
+            this._group   = opts.group || 'sfx';
+            this._volume  = clamp(opts.volume != null ? opts.volume : 1, 0, 1);
+            this._loop    = !!opts.loop;
+            this._rate    = opts.rate != null ? opts.rate : 1;
+            this._muted   = false;
+            this._live    = !!opts.livePlayer;
+            this.poolSize = opts.pool != null ? opts.pool : (this._group === 'music' ? 1 : 4);
             this.onBusy   = opts.onBusy || 'steal';
             this.sources  = [].concat(src);
             this.url      = this._pickSource();
@@ -665,8 +766,6 @@
             this.unverified = false;      // true if the browser never confirmed loading (e.g. iOS before a tap)
             this.error    = null;
             this._opts    = opts;
-            this._elements = [];          // pooled <audio> elements
-            this._claims  = new Map();    // element -> SoundVoice currently using it
             this._cancelFade = null;
             this.ready    = new Promise((res) => { this._resolve = res; });
 
@@ -722,6 +821,26 @@
             this._resolve(this);
         }
 
+        // volume / rate / loop / muted / group / livePlayer can be assigned at any time:
+        // playing voices pick the change up instantly and keep playing (nothing restarts).
+        get volume() { return this._volume; }
+        set volume(v) { this._volume = clamp(v, 0, 1); this._refresh(); }
+        get rate() { return this._rate; }
+        set rate(r) { this._rate = r; this._refresh(); }
+        get loop() { return this._loop; }
+        set loop(b) { this._loop = !!b; this._refresh(); }
+        get muted() { return this._muted; }
+        set muted(b) { this._muted = !!b; this._refresh(); }
+        get group() { return this._group; }
+        set group(g) { this._group = g || 'sfx'; this._refresh(); }
+        get livePlayer() { return this._live; }
+        set livePlayer(b) { this._live = !!b; }
+
+        _refresh() { if (this._claims) for (const v of this._claims.values()) v._apply(); }
+
+        /** The current playback (playing or paused), or null. With livePlayer this is THE playback. */
+        get voice() { return this._claims.values().next().value || null; }
+
         get element()   { return this._elements[0] || null; }
         get duration()  { return this.element ? this.element.duration : 0; }
         get isPlaying() { for (const v of this._claims.values()) if (v.isPlaying) return true; return false; }
@@ -731,6 +850,13 @@
         _acquire() {
             let el = this._elements.find((e) => !this._claims.has(e));
             if (el) return el;
+            if (this._live && this._elements.length >= 1) {          // livePlayer after other voices were already running: never add more copies
+                const oldest = this._claims.values().next().value;
+                if (!oldest) return null;
+                const stolen = oldest.element;
+                oldest.stop();
+                return stolen;
+            }
             if (this._elements.length < this.poolSize) {
                 el = this._makeElement();
                 this._elements.push(el);
@@ -744,9 +870,25 @@
             return stolen;
         }
 
-        /** Play the sound. opts: volume, loop, rate, start (seconds), onend, queue (wait for first user gesture). */
+        /**
+         * Play the sound. opts: volume, loop, rate, start (seconds), onend, queue (wait for first user gesture),
+         * restart (livePlayer only: jump back to the start instead of carrying on).
+         *
+         * livePlayer sounds never stack: if the sound is already playing (or paused) play() does NOT start a
+         * second copy and does NOT restart it - the existing playback keeps going, any volume / rate / loop /
+         * onend you pass is applied to it live, a paused playback is resumed, and that same SoundVoice is returned.
+         */
         play(opts = {}) {
             if (this.failed) return null;
+            if (this._live) {
+                const live = this.voice;
+                if (live && live.state !== 'ended') {
+                    live.adjust(opts);
+                    if (opts.restart) live.seek(opts.start || 0);
+                    if (live.state === 'paused') live.resume();
+                    return live;
+                }
+            }
             const el = this._acquire();
             if (!el) return null;
             const voice = new SoundVoice(this, el, opts);
@@ -758,10 +900,26 @@
         pause()  { for (const v of this.voices) v.pause();  return this; }
         resume() { for (const v of this.voices) v.resume(); return this; }
 
-        /** Change this sound's base volume (affects playing voices too). */
-        setVolume(v) { this.volume = clamp(v, 0, 1); for (const vc of this.voices) vc._apply(); return this; }
-        mute()   { this.muted = true;  for (const v of this.voices) v._apply(); return this; }
-        unmute() { this.muted = false; for (const v of this.voices) v._apply(); return this; }
+        /** Change this sound's base volume (playing voices update instantly). */
+        setVolume(v) { this.volume = v; return this; }
+        /** Change the playback speed (playing voices update instantly, no restart). */
+        setRate(r)   { this.rate = r; return this; }
+        /** Turn looping on or off (a playing voice carries on and starts/stops repeating at its next end). */
+        setLoop(b)   { this.loop = b; return this; }
+        mute()   { this.muted = true;  return this; }
+        unmute() { this.muted = false; return this; }
+
+        /** Change several settings at once, live: { volume, rate, loop, muted, group, livePlayer }. Nothing restarts. */
+        adjust(o = {}) {
+            if (o.volume     != null) this._volume = clamp(o.volume, 0, 1);
+            if (o.rate       != null) this._rate = o.rate;
+            if (o.loop       != null) this._loop = !!o.loop;
+            if (o.muted      != null) this._muted = !!o.muted;
+            if (o.group      != null) this._group = o.group;
+            if (o.livePlayer != null) this._live = !!o.livePlayer;
+            this._refresh();
+            return this;
+        }
 
         /** Fade the whole sound (all voices) to volume `v`. Handy for music. */
         fadeTo(v, seconds, stopAtEnd = false) {
@@ -772,7 +930,7 @@
             return this;
         }
 
-        clone(overrides = {}) { return new SoundObject(this.sources, Object.assign({}, this._opts, { volume: this.volume, loop: this.loop, rate: this.rate, group: this.group, name: null }, overrides)); }
+        clone(overrides = {}) { return new SoundObject(this.sources, Object.assign({}, this._opts, { volume: this.volume, loop: this.loop, rate: this.rate, group: this.group, livePlayer: this._live, name: null }, overrides)); }
 
         /** Stop and release the audio elements. */
         dispose() {
@@ -1099,6 +1257,9 @@
         par('flipY', 'boolean', 'false', 'Mirror vertically (around the anchor).'),
         par('smoothing', 'boolean', 'true', 'false = crisp, unblurred scaling (pixel art).'),
         par('visible', 'boolean', 'true', 'false = draw() does nothing.'),
+        par('tint', 'string', 'none', 'CSS colour laid over the image, e.g. "red" or "#ff8800". With the default tintMode "multiply", white means unchanged. Works on every draw, so it can change each frame (damage flashes, hover colours).'),
+        par('tintStrength', 'number 0..1', '1', 'How strongly the tint applies.'),
+        par('tintMode', '"multiply" | "overlay"', '"multiply"', '"multiply" darkens/colours the image like p5\'s tint(); "overlay" paints the colour over the non-transparent pixels.'),
         par('crossOrigin', 'string', 'not set', 'Only for images hosted on another site: "anonymous". Leave it out on file:// - setting it stops images loading there.'),
         par('onload', 'function(image)', 'none', 'Called once when loading succeeds.'),
         par('onerror', 'function(image, error)', 'none', 'Called once if loading fails.')
@@ -1123,6 +1284,7 @@
         par('group', 'string', '"sfx"', 'Volume group. Use any name; "music" is the usual second group. See setGroupVolume.'),
         par('pool', 'number', '4 (music group: 1)', 'How many copies may play at once. Each play() uses a free copy.'),
         par('onBusy', '"steal" | "ignore"', '"steal"', 'When every copy in the pool is busy: "steal" restarts the oldest one, "ignore" skips the new play().'),
+        par('livePlayer', 'boolean', 'false', 'true = this sound plays as ONE live playback: play() while it is already playing does not stack a second copy and does not restart it - it carries on and just applies any new volume / rate / loop live. See help("livePlayer").'),
         par('crossOrigin', 'string', 'not set', 'Only for audio hosted on another site. Leave it out on file://.'),
         par('onload', 'function(sound)', 'none', 'Called once when loading succeeds.'),
         par('onerror', 'function(sound, error)', 'none', 'Called once if loading fails.')
@@ -1133,6 +1295,7 @@
         par('rate', 'number', 'the sound\'s rate', 'Playback speed for this playback.'),
         par('start', 'number', '0', 'Start position in seconds.'),
         par('onend', 'function(voice)', 'none', 'Called when the sound reaches its natural end (not when stopped).'),
+        par('restart', 'boolean', 'false', 'livePlayer sounds only: jump back to "start" (default 0) instead of carrying on from where it is.'),
         par('queue', 'boolean', 'false', 'If the browser blocks sound (no click/key/touch yet), wait and start on the first interaction instead of dropping it. Looping sounds always wait.')
     ];
     const SRC_IMG = 'string | HTMLImageElement | canvas | ImageBitmap | p5.Image';
@@ -1180,13 +1343,27 @@
             'See also: SpriteObject, SpriteObject.addAnimation, SpriteObject.play.'] },
         audio: { kind: 'guide', sig: 'audio', sum: 'Playing sound, volume groups and the autoplay rule.', body: [
             'newSound() makes a SoundObject; sound.play() starts one playback and returns a SoundVoice you can stop or fade.',
-            'Overlap: a sound has a pool of copies (opts.pool). Playing again while all are busy restarts the oldest (onBusy:"steal") or is skipped ("ignore").',
+            'Overlap: a sound has a pool of copies (opts.pool). Playing again while all are busy restarts the oldest (onBusy:"steal") or is skipped ("ignore"). For a sound that must never overlap or restart, use livePlayer: help("livePlayer").',
             'Volume = voice volume x sound volume x group volume x master volume. Set groups with setGroupVolume("music", 0.4); everything with setMasterVolume(v).',
             'Browsers block sound until the player clicks, presses a key or touches the page. Looping sounds (music) and play({ queue: true }) wait and start by themselves on that first interaction; other one-shot sounds are dropped. soundsUnlocked() tells you whether it has happened.',
             'Formats: pass a list of fallbacks, newSound(["a.ogg", "a.mp3"]); the first one the browser can play is used.',
             'Fades: sound.fadeTo(0.2, 2)   voice.fadeTo(0, 1, true)  (true = stop at the end).',
             'Works from file:// (plain <audio> elements; no Web Audio decoding is used).',
-            'See also: newSound, SoundObject, SoundVoice, setMasterVolume, setGroupVolume, muteAll.'] },
+            'See also: newSound, SoundObject, SoundVoice, livePlayer, setMasterVolume, setGroupVolume, muteAll.'] },
+        livePlayer: { kind: 'guide', sig: 'livePlayer', sum: 'Sounds that play as one live, never-stacking playback.', body: [
+            'A normal sound can overlap itself: every play() starts another copy. A livePlayer sound cannot:',
+            '  const hum = newSound("engine.wav", { livePlayer: true, loop: true });',
+            '  hum.play();                       // starts',
+            '  hum.play({ volume: 0.4 });        // already playing: NO second copy, NO restart - volume just changes live',
+            '  hum.volume = 0.8;  hum.rate = 1.3;  hum.loop = false;   // all instant, playback never resets',
+            '  hum.adjust({ volume: 0.2, rate: 0.9 });                  // several at once',
+            'What counts as "playing": playing or paused. play() on a paused livePlayer resumes it where it stopped. Once it has ended (or stop() was called) the next play() starts it fresh.',
+            'To jump back to the start deliberately:  hum.play({ restart: true })   or   hum.voice.seek(0).',
+            'Everything live: volume, rate, loop, muted, group and the master / group volumes (setMasterVolume, setGroupVolume) change a playing sound instantly - for ALL sounds, not just livePlayer ones.',
+            'The one playback is available as  hum.voice  (a SoundVoice), so you can also fade it: hum.fadeTo(0, 2, true).',
+            'Turn it on or off later with  hum.livePlayer = true / false  (voices already playing finish normally).',
+            'Good for: music, engine/ambience loops, charge-up hums, UI sounds that should not machine-gun.',
+            'See also: newSound, SoundObject, audio.'] },
         p5: { kind: 'guide', sig: 'p5', sum: 'Using the library with p5.js.', body: [
             'Global mode: nothing to set up - images draw on p5\'s canvas, and p5\'s own push/translate/scale still apply.',
             '  function preload() { ship = newImage("ship.png"); holdP5Preload(); }   // p5 waits for loading (p5 1.x)',
@@ -1302,6 +1479,7 @@
             props: [prp('name', 'string | null', 'Registry name.'), prp('x', 'number', 'Draw position, horizontal.'), prp('y', 'number', 'Draw position, vertical.'), prp('angle', 'number', 'Rotation in degrees.'),
                 prp('scaleX', 'number', 'Horizontal scale (negative mirrors).'), prp('scaleY', 'number', 'Vertical scale (negative mirrors).'), prp('anchorX', 'number 0..1', 'Horizontal anchor (0 left, 0.5 centre, 1 right).'), prp('anchorY', 'number 0..1', 'Vertical anchor.'),
                 prp('alpha', 'number 0..1', 'Opacity.'), prp('flipX', 'boolean', 'Mirror horizontally.'), prp('flipY', 'boolean', 'Mirror vertically.'), prp('smoothing', 'boolean', 'false = crisp pixel scaling.'), prp('visible', 'boolean', 'false = draw() does nothing.'),
+                prp('tint', 'string | null', 'CSS colour laid over the image (null = none). Safe to change every frame.'), prp('tintStrength', 'number 0..1', 'How strongly the tint applies.'), prp('tintMode', '"multiply" | "overlay"', 'How the tint colour is combined with the image.'),
                 prp('src', 'string | null', 'The path the image was created from (null for canvas / bitmap sources).'), prp('element', 'HTMLImageElement | canvas | ImageBitmap', 'The underlying drawable.'),
                 prp('loaded', 'boolean', 'true once the image is ready to draw.'), prp('failed', 'boolean', 'true if loading failed.'), prp('error', 'graphicsError | null', 'The load error, if any.'),
                 prp('ready', 'Promise', 'Resolves (never rejects) when loading has finished - check .failed afterwards.'),
@@ -1311,6 +1489,7 @@
             methods: {
                 draw: mth('draw(target?)', 'Draws the image using its own x, y, angle, scale, anchor, alpha and flips. Does nothing while loading or if visible is false; a failed image draws the missing marker.', [par('target', 'canvas | 2D context | p5 | p5.Graphics', 'the current draw target', 'Where to draw. See help("drawing").')], 'this', 'ship.draw();'),
                 drawAt: mth('drawAt(x, y, w?, h?, target?)', 'Draws once at a different position (and size) without changing the object. Keeps angle, scale, anchor, alpha and flips.', [par('x', 'number', undefined, 'Position, horizontal.'), par('y', 'number', undefined, 'Position, vertical.'), par('w', 'number', 'this.width', 'Width before scale.'), par('h', 'number', 'this.height', 'Height before scale.'), par('target', 'canvas | 2D context | p5 | p5.Graphics', 'the current draw target', 'Where to draw.')], 'this', 'for (let i = 0; i < 5; i++) tile.drawAt(i * 32, 0);'),
+                drawWith: mth('drawWith(over, target?)', 'Draws once with some properties overridden, without changing the object - so one image can be drawn by many owners with different positions, angles or tints. Used by the game engine to draw textures.', [par('over', 'object', '{}', 'Any of x, y, width, height, angle, scaleX, scaleY, anchorX, anchorY, alpha, flipX, flipY, tint, tintStrength, tintMode, smoothing, visible. Anything left out uses the object\'s own value.'), par('target', 'canvas | 2D context | p5 | p5.Graphics', 'the current draw target', 'Where to draw.')], 'this', 'tile.drawWith({ x: 100, y: 50, angle: 30, tint: "red", tintStrength: 0.5 });'),
                 drawRegion: mth('drawRegion(sx, sy, sw, sh, dx, dy, dw?, dh?, target?)', 'Draws one rectangle of the source image. Ignores angle, scale, anchor and flips; keeps alpha and smoothing. Good for tilesets.', [par('sx', 'number', undefined, 'Source rectangle x (pixels in the image).'), par('sy', 'number', undefined, 'Source rectangle y.'), par('sw', 'number', undefined, 'Source rectangle width.'), par('sh', 'number', undefined, 'Source rectangle height.'), par('dx', 'number', undefined, 'Destination x.'), par('dy', 'number', undefined, 'Destination y.'), par('dw', 'number', 'sw', 'Destination width.'), par('dh', 'number', 'sh', 'Destination height.'), par('target', 'canvas | 2D context | p5 | p5.Graphics', 'the current draw target', 'Where to draw.')], 'this', 'tiles.drawRegion(32, 0, 16, 16, 100, 100, 32, 32);'),
                 setPosition: mth('setPosition(x, y)', 'Sets x and y.', [par('x', 'number', undefined, 'New x.'), par('y', 'number', undefined, 'New y.')], 'this (chainable)', 'ship.setPosition(mouseX, mouseY).draw();'),
                 setAnchor: mth('setAnchor(ax, ay = ax)', 'Sets the anchor point (0..1 on each axis).', [par('ax', 'number 0..1', undefined, 'Horizontal anchor.'), par('ay', 'number 0..1', 'ax', 'Vertical anchor.')], 'this (chainable)', 'ship.setAnchor(0.5);   // centre'),
@@ -1323,7 +1502,7 @@
                 contains: mth('contains(px, py)', 'Is the world point inside the drawn image? Respects angle, scale, flips and anchor (uses the rectangle, not transparent pixels).', [par('px', 'number', undefined, 'Point x.'), par('py', 'number', undefined, 'Point y.')], 'boolean', 'if (button.contains(mouseX, mouseY)) { ... }'),
                 clone: mth('clone(overrides = {})', 'Makes an independent object that shares the same pixels. Any option can be overridden. The registry name is not copied unless you pass name.', [par('overrides', 'object', '{}', 'Any ImageObject option, e.g. { x: 200, alpha: 0.5 }.')], 'ImageObject (SpriteObject for sprites)', 'const ghost = ship.clone({ alpha: 0.4 });'),
                 crop: mth('crop(x, y, w, h, opts = {})', 'Makes a new ImageObject from a rectangle of the source image (pixel coordinates in the whole image). Wait for loading first.', [par('x', 'number', undefined, 'Source x.'), par('y', 'number', undefined, 'Source y.'), par('w', 'number', undefined, 'Width.'), par('h', 'number', undefined, 'Height.'), par('opts', 'object', '{}', 'ImageObject options for the new object.')], 'ImageObject | null (null if not loaded yet - a warning is logged)', 'await sheet.ready;\nconst icon = sheet.crop(0, 0, 16, 16, { x: 10, y: 10 });'),
-                tinted: mth('tinted(color, strength = 1, opts = {})', 'Makes a new ImageObject with a colour laid over the non-transparent pixels. For sprites, the current frame only. Wait for loading first.', [par('color', 'string', undefined, 'Any CSS colour: "#f00", "rgb(255,0,0)", "red".'), par('strength', 'number 0..1', '1', 'How strongly the colour covers the original.'), par('opts', 'object', '{}', 'ImageObject options for the new object.')], 'ImageObject | null', 'const hurt = ship.tinted("red", 0.6);'),
+                tinted: mth('tinted(color, strength = 1, opts = {})', 'Makes a NEW ImageObject with a colour painted permanently over the non-transparent pixels (for a live colour change use the tint property instead). For sprites, the current frame only. Wait for loading first.', [par('color', 'string', undefined, 'Any CSS colour: "#f00", "rgb(255,0,0)", "red".'), par('strength', 'number 0..1', '1', 'How strongly the colour covers the original.'), par('opts', 'object', '{}', 'ImageObject options for the new object.')], 'ImageObject | null', 'const hurt = ship.tinted("red", 0.6);'),
                 toCanvas: mth('toCanvas()', 'Copies the image (the current frame for sprites) onto a new canvas.', [], 'canvas | null', 'document.body.appendChild(ship.toCanvas());'),
                 getPixel: mth('getPixel(x, y)', 'Reads one pixel of the image (the current frame for sprites).', [par('x', 'number', undefined, 'Pixel x.'), par('y', 'number', undefined, 'Pixel y.')], '[r, g, b, a] (0-255) | null. Returns null on file:// (the browser blocks reading) - see help("file").', 'const [r, g, b, a] = ship.getPixel(10, 10) || [];'),
                 toDataURL: mth('toDataURL(type?)', 'Exports the image as a data-URI string.', [par('type', 'string', '"image/png"', 'Image mime type.')], 'string | null (null on file://)', 'const url = ship.toDataURL();'),
@@ -1348,17 +1527,20 @@
 
         SoundObject: { kind: 'class', group: 'Classes', sig: 'SoundObject', sum: 'A sound with a pool of copies so it can overlap itself. Made by newSound().',
             params: SOUND_OPTS, ctor: 'new SoundObject(src, opts) - normally made with newSound(src, opts)',
-            props: [prp('name', 'string | null', 'Registry name.'), prp('group', 'string', 'Volume group.'), prp('volume', 'number 0..1', 'Base volume (use setVolume() so playing voices update).'), prp('loop', 'boolean', 'Default loop setting for play().'), prp('rate', 'number', 'Default playback speed for play().'),
-                prp('muted', 'boolean', 'This sound is muted (mute() / unmute()).'), prp('poolSize', 'number', 'Max overlapping copies.'), prp('onBusy', '"steal" | "ignore"', 'What to do when the pool is full.'), prp('sources', 'string[]', 'The paths given.'), prp('url', 'string', 'The path actually used (first playable format).'),
+            props: [prp('name', 'string | null', 'Registry name.'), prp('group', 'string', 'Volume group (assign any time - playing voices update instantly).'), prp('volume', 'number 0..1', 'Base volume. Assign any time: playing voices update instantly and keep playing.'), prp('loop', 'boolean', 'Looping. Assign any time: a playing voice follows it live (unless that voice was given its own loop).'), prp('rate', 'number', 'Playback speed. Assign any time: playing voices update instantly, no restart.'),
+                prp('muted', 'boolean', 'This sound is muted (assign, or mute() / unmute()).'), prp('livePlayer', 'boolean', 'true = one never-stacking playback (see help("livePlayer")). Assign any time.'), prp('voice', 'SoundVoice | null', 'The current playback (playing or paused), or null. With livePlayer this is THE playback (read-only).'), prp('poolSize', 'number', 'Max overlapping copies.'), prp('onBusy', '"steal" | "ignore"', 'What to do when the pool is full.'), prp('sources', 'string[]', 'The paths given.'), prp('url', 'string', 'The path actually used (first playable format).'),
                 prp('loaded', 'boolean', 'true once the browser has loaded enough to play.'), prp('failed', 'boolean', 'true if loading failed.'), prp('unverified', 'boolean', 'true if the browser never confirmed loading (some phones wait for a tap) - it will still try to play.'),
                 prp('error', 'graphicsError | null', 'The load error, if any.'), prp('ready', 'Promise', 'Resolves (never rejects) when loading has finished.'), prp('element', 'HTMLAudioElement', 'The first underlying <audio> element.'),
                 prp('duration', 'number', 'Length in seconds (read-only).'), prp('isPlaying', 'boolean', 'Is any copy playing (read-only).'), prp('voices', 'SoundVoice[]', 'Currently playing or paused voices (read-only).')],
             methods: {
-                play: mth('play(opts = {})', 'Starts one playback and returns it. If sound is blocked by the browser, looping sounds and queue:true wait for the first click / key / touch.', PLAY_OPTS, 'SoundVoice | null (null if the sound failed to load, or onBusy is "ignore" and the pool is full)', 'const v = boom.play({ volume: 0.6, rate: 1.2 });'),
+                play: mth('play(opts = {})', 'Starts one playback and returns it. If sound is blocked by the browser, looping sounds and queue:true wait for the first click / key / touch. On a livePlayer sound that is already playing (or paused) nothing new starts: the existing playback keeps going, opts.volume / rate / loop / onend are applied to it live, a paused one resumes, and the same SoundVoice is returned (opts.restart:true rewinds it).', PLAY_OPTS, 'SoundVoice | null (null if the sound failed to load, or onBusy is "ignore" and the pool is full)', 'const v = boom.play({ volume: 0.6, rate: 1.2 });'),
                 stop: mth('stop()', 'Stops every playing copy and rewinds.', [], 'this (chainable)', 'theme.stop();'),
                 pause: mth('pause()', 'Pauses every playing copy.', [], 'this (chainable)', 'theme.pause();'),
                 resume: mth('resume()', 'Resumes paused copies.', [], 'this (chainable)', 'theme.resume();'),
-                setVolume: mth('setVolume(v)', 'Sets the base volume; playing voices update immediately.', [par('v', 'number 0..1', undefined, 'New volume.')], 'this (chainable)', 'theme.setVolume(0.3);'),
+                setVolume: mth('setVolume(v)', 'Sets the base volume; playing voices update immediately (same as assigning sound.volume).', [par('v', 'number 0..1', undefined, 'New volume.')], 'this (chainable)', 'theme.setVolume(0.3);'),
+                setRate: mth('setRate(r)', 'Sets the playback speed; playing voices update immediately without restarting (same as assigning sound.rate).', [par('r', 'number', undefined, '1 = normal, 2 = double speed.')], 'this (chainable)', 'engine.setRate(1 + speed / 100);'),
+                setLoop: mth('setLoop(b)', 'Turns looping on or off live. A playing voice carries on and repeats (or stops repeating) at its next end.', [par('b', 'boolean', undefined, 'true = repeat.')], 'this (chainable)', 'theme.setLoop(false);'),
+                adjust: mth('adjust(settings)', 'Changes several settings at once, live, without restarting anything.', [par('settings.volume', 'number 0..1', 'unchanged', 'Base volume.'), par('settings.rate', 'number', 'unchanged', 'Playback speed.'), par('settings.loop', 'boolean', 'unchanged', 'Looping.'), par('settings.muted', 'boolean', 'unchanged', 'Mute this sound.'), par('settings.group', 'string', 'unchanged', 'Volume group.'), par('settings.livePlayer', 'boolean', 'unchanged', 'Turn livePlayer mode on or off.')], 'this (chainable)', 'hum.adjust({ volume: 0.3, rate: 1.2 });'),
                 mute: mth('mute()', 'Mutes this sound only.', [], 'this (chainable)', 'boom.mute();'),
                 unmute: mth('unmute()', 'Reverses mute().', [], 'this (chainable)', 'boom.unmute();'),
                 fadeTo: mth('fadeTo(v, seconds, stopAtEnd = false)', 'Gradually changes the base volume (all copies).', [par('v', 'number 0..1', undefined, 'Target volume.'), par('seconds', 'number', undefined, 'How long the fade takes.'), par('stopAtEnd', 'boolean', 'false', 'true = stop the sound when the fade finishes (fade-out).')], 'this (chainable)', 'theme.fadeTo(0, 2, true);   // fade out over 2s, then stop'),
@@ -1368,15 +1550,17 @@
 
         SoundVoice: { kind: 'class', group: 'Classes', sig: 'SoundVoice', sum: 'One playback of a SoundObject, returned by sound.play(). Lets you stop, pause, seek or fade just that playback.',
             ctor: 'Made by SoundObject.play() - not created directly.',
-            props: [prp('owner', 'SoundObject', 'The sound this playback belongs to.'), prp('element', 'HTMLAudioElement', 'The <audio> element playing it.'), prp('volume', 'number 0..1', 'Volume of this playback (use setVolume()).'), prp('loop', 'boolean', 'Repeats forever.'), prp('rate', 'number', 'Playback speed.'),
+            props: [prp('owner', 'SoundObject', 'The sound this playback belongs to.'), prp('element', 'HTMLAudioElement', 'The <audio> element playing it.'), prp('volume', 'number 0..1', 'Volume of this playback. Assign any time - updates instantly, playback continues.'), prp('loop', 'boolean', 'Repeats forever. Follows the sound\'s loop until you set it on the voice; assign any time.'), prp('rate', 'number', 'Playback speed. Follows the sound\'s rate until you set it on the voice; assign any time.'),
                 prp('onend', 'function | null', 'Called as (voice) at the natural end.'), prp('state', '"playing" | "paused" | "ended"', 'Current state.'), prp('isPlaying', 'boolean', 'state is "playing" (read-only).'), prp('currentTime', 'number', 'Position in seconds (read-only).'), prp('duration', 'number', 'Length in seconds (read-only).')],
             methods: {
                 pause: mth('pause()', 'Pauses this playback.', [], 'this', 'v.pause();'),
                 resume: mth('resume()', 'Continues a paused playback.', [], 'this', 'v.resume();'),
                 stop: mth('stop()', 'Stops and rewinds this playback and frees its pool slot. (onend does not fire for manual stops.)', [], 'this', 'v.stop();'),
                 seek: mth('seek(t)', 'Jumps to a position.', [par('t', 'number', undefined, 'Seconds from the start.')], 'this', 'v.seek(1.5);'),
-                setVolume: mth('setVolume(v)', 'Sets this playback\'s volume.', [par('v', 'number 0..1', undefined, 'New volume.')], 'this', 'v.setVolume(0.5);'),
-                setRate: mth('setRate(r)', 'Sets this playback\'s speed.', [par('r', 'number', undefined, '1 = normal.')], 'this', 'v.setRate(0.8);'),
+                setVolume: mth('setVolume(v)', 'Sets this playback\'s volume live (no restart).', [par('v', 'number 0..1', undefined, 'New volume.')], 'this', 'v.setVolume(0.5);'),
+                setRate: mth('setRate(r)', 'Sets this playback\'s speed live (no restart).', [par('r', 'number', undefined, '1 = normal.')], 'this', 'v.setRate(0.8);'),
+                setLoop: mth('setLoop(b)', 'Turns looping of this playback on or off live.', [par('b', 'boolean', undefined, 'true = repeat.')], 'this', 'v.setLoop(true);'),
+                adjust: mth('adjust(settings)', 'Changes several settings of this playback at once, live. The playback keeps going from where it is.', [par('settings.volume', 'number 0..1', 'unchanged', 'Volume of this playback.'), par('settings.rate', 'number', 'unchanged', 'Playback speed.'), par('settings.loop', 'boolean', 'unchanged', 'Looping.'), par('settings.onend', 'function(voice)', 'unchanged', 'Replace the natural-end callback (null removes it).')], 'this', 'v.adjust({ volume: 0.4, rate: 1.1 });'),
                 fadeTo: mth('fadeTo(v, seconds, stopAtEnd = false)', 'Gradually changes this playback\'s volume.', [par('v', 'number 0..1', undefined, 'Target volume.'), par('seconds', 'number', undefined, 'Duration.'), par('stopAtEnd', 'boolean', 'false', 'true = stop when the fade finishes.')], 'this', 'v.fadeTo(0, 1, true);')
             }, see: ['SoundObject', 'audio'] },
 
@@ -1386,7 +1570,7 @@
 
     // ---- help lookup ----
     const GROUP_ORDER = ['Classes', 'Creating', 'Loading', 'Drawing', 'p5.js', 'Audio', 'Help'];
-    const GUIDES = ['getting-started', 'loading', 'drawing', 'sprites', 'audio', 'p5', 'standalone', 'file', 'libraries'];
+    const GUIDES = ['getting-started', 'loading', 'drawing', 'sprites', 'audio', 'livePlayer', 'p5', 'standalone', 'file', 'libraries'];
     let helpIndex = null;
 
     function buildHelpIndex() {

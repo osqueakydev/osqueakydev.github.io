@@ -40,6 +40,8 @@ class worldError extends Error {
 // UTILITY FUNCTIONS
 // ============================================
 
+
+
 /**
  * Pads a number with leading zeros and trailing zeros so it
  * always has `totalLength` integer digits and `decimalPlaces`
@@ -69,8 +71,11 @@ function pad(num, totalLength = 1, decimalPlaces = 2) {
         intPart = '0' + intPart;
     }
 
-    return intPart + '.' + decPart;
+    return intPart + (decimalPlaces > 0 ? '.' : '') + decPart;
 }
+
+
+
 
 // ============================================
 // FPS TRACKER

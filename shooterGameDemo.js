@@ -97,57 +97,8 @@ class Gun {
                     const angle = findSlope(_p.x,_p.y, player.ignoreCamera ? mouse.rawX : mouse.x, player.ignoreCamera ? mouse.rawY : mouse.y);
                     //+25*-Math.cos(angle), +25*-Math.sin(angle)
                     
-                    player.processCollisions();
-                    // const _cdl = player.collisions.filter(e => e.thisHitbox == player.hitbox[2]);
-                    // if(false)
-                    // if(_cdl.length > 0){
-
-                    //     _cdl.forEach(data => {
-                    //         const obj = data.other;
-                    //         if(!(obj instanceof Player) && obj instanceof Entity && meleeCanReach(obj)){
-                    //             if(obj.applyDamage)obj.applyDamage(this.damage);
-                    //             else if(obj.health) obj.health -= this.damage;
-                    //             this._mag -= 1;
-                    //             return;
-                    //         }
-                    //     });
-
-                    //     return;
-                    // }
-                    let _prematureCollision = false;
-                    let damageApplied = false;
-                    Scene.getActiveScene().objects.forEach(s => {
-                        if(s.id != _playerMelee.id && s.id != player.id){
-                            if(s.collision.enabled && s.collision.solid){
-                                if(!damageApplied && meleeCanReach(s) && _playerMelee.hitbox[0].collidesWith(s.hitbox[0],0)){
-                                    
-                                    if(s instanceof Player){
-                                        s.applyDamage(this.damage * gameSettings.friendlyDamage);
-                                        this._mag -= 1;
-                                        //console.log('premature collision',s.constructor.name);
-                                        _triggers._prematureCollision.damaged = true;
-                                        damageApplied = true;
-                                        
-                                    }else if(s instanceof Entity){
-                                        if(s.applyDamage)s.applyDamage(this.damage,damageDisplay);
-                                        else s.health -= this.damage;
-                                        this._mag -= 1;
-                                        //console.log('premature collision',s.constructor.name);
-                                        _triggers._prematureCollision.damaged = true;
-                                        damageApplied = true;
-                                    }
-                                    _triggers._prematureCollision.self = true;
-                                    
-                                    _prematureCollision = true;
-                                }
-                            }
-                            
-                        }
-                    });
-                    if(_prematureCollision){
-                        _triggers._prematureCollision.last = new Date().getTime();
-                        return;
-                    }
+                    
+                    
                     var bullet = new gameObject(_p.x,_p.y,this.size.width,this.size.height,'play');
                     bullet.processCollisions();
                     
@@ -242,7 +193,24 @@ class Gun {
                         self.delete();
                         bullets[_bi] = self;
                     });
-
+                    bullet.processCollisions();
+                    let bulletOrigin = bullet.hitbox[0];
+                    Scene.getActiveScene().objects.filter(e => !e.deleted).forEach(o => {
+                        let collisionTester = o.hitbox[0];
+                        if(o.id == bullet.id)return;
+                        if(bulletOrigin.collidesWith(collisionTester,1)){
+                            if(!(o instanceof Player) && o.id != _playerMelee.id){
+                                if(o.applyDamage){
+                                    o.applyDamage(this.damage,damageDisplay);
+                                    bullet.delete();
+                                } else {
+                                    o.health -= this.damage;
+                                    bullet.delete();
+                                }
+                            }
+                        }
+                    });
+                    
                     bullet.transform.rotation = (angle);
                     bullet.setVelocity(this.velocity,angle-Math.PI);
                     bullets.push(bullet);
@@ -263,47 +231,30 @@ class Gun {
                             this._burst = 0;
                         }, 1000/(this.firerate*this.burst));
                     }
-                    let _prematureCollision = false;
-                    let damageApplied = false;
-                    Scene.getActiveScene().objects.forEach(s => {
-                        if(s.id != _playerMelee.id && s.id != player.id){
-                            if(s.collision.enabled && s.collision.solid){
-                                if(!damageApplied && meleeCanReach(s) && _playerMelee.hitbox[0].collidesWith(s.hitbox[0],0)){
-                                    
-                                    if(s instanceof Player){
-                                        s.applyDamage(this.damage * gameSettings.friendlyDamage);
-                                        this._mag -= 1;
-                                        //console.log('premature collision',s.constructor.name);
-                                        _triggers._prematureCollision.damaged = true;
-                                        damageApplied = true;
-                                        
-                                    }else if(s instanceof Entity){
-                                        if(s.applyDamage)s.applyDamage(this.damage,damageDisplay);
-                                        else s.health -= this.damage;
-                                        this._mag -= 1;
-                                        //console.log('premature collision',s.constructor.name);
-                                        _triggers._prematureCollision.damaged = true;
-                                        damageApplied = true;
-                                    }
-                                    _triggers._prematureCollision.self = true;
-                                    
-                                    _prematureCollision = true;
-                                }
-                            }
-                            
-                        }
-                    });
-                    if(_prematureCollision){
-                        _triggers._prematureCollision.last = new Date().getTime();
-                        return;
-                    }
+                    
                     const _p = player.position(true);
                     const angle = findSlope(_p.x,_p.y,
                         player.ignoreCamera ? mouse.rawX : mouse.x,
                         player.ignoreCamera ? mouse.rawY : mouse.y);
                     var bullet = new gameObject(_p.x,_p.y,this.size.width,this.size.height,'play');
-                    bullet.processCollisions();
                     
+                    bullet.processCollisions();
+                    let bulletOrigin = bullet.hitbox[0];
+                    Scene.getActiveScene().objects.filter(e => !e.deleted).forEach(o => {
+                        let collisionTester = o.hitbox[0];
+                        if(o.id == bullet.id)return;
+                        if(bulletOrigin.collidesWith(collisionTester,1)){
+                            if(!(o instanceof Player) && o.id != _playerMelee.id){
+                                if(o.applyDamage){
+                                    o.applyDamage(this.damage,damageDisplay);
+                                    bullet.delete();
+                                } else {
+                                    o.health -= this.damage;
+                                    bullet.delete();
+                                }
+                            }
+                        }
+                    });
                     
                     bullet.ignoreCamera = player.ignoreCamera;
                     this._mag -= 1;
@@ -318,6 +269,7 @@ class Gun {
                     //bullet's independent script to deal damage and delete itself
                     
                     bullet.scripts.push((self)=>{
+                        
                         self.ignoreCamera = player.ignoreCamera;
                         const _bi = bullets.indexOf(self);
                         self.processCollisions();
@@ -395,7 +347,13 @@ class Gun {
                         self.delete();
                         bullets[_bi] = self;
                     });
-
+                    bullet.processCollisions();
+                    const __c = bullet.collisions.map(e => e.other);
+                    console.log(__c);
+                    if(__c.length > 0){
+                        //__c.forEach(e=>{});
+                        console.log('r');
+                    }
                     bullet.transform.rotation = (angle);
                     bullet.setVelocity(this.velocity,angle-Math.PI);
                     bullets.push(bullet);
@@ -1683,9 +1641,9 @@ function _gameReset(){
 
 
 const pauseMenu = {
-    resume:new uiButton(200,200,130,15,'67','667'),
+    resume:new uiButton(200,200,130,15,'67','play'),
 };
-
+//pauseMenu.resume.ignoreCamera = false;
 
 new Scene('play', '#4e4e8d', ()=>{
     if (World.controller && World.controller.connected) {
@@ -1694,13 +1652,13 @@ new Scene('play', '#4e4e8d', ()=>{
     
     if(player.health > 0)waveStart();
     else if(!gameSettings.immortal)_gameReset();
-    let gg = keyboard.getKey('shift');
+    
     push();
     translate(world.camera.x,world.camera.y);
     colorText(`player sprint: ${player.sprint.value} \nplayer speed: ${pad(player.velocity().x,2,2)}`,300,70);
     pop();
-    if(getInput('key@e:held')>0)console.log(67);
-    findSlope(player.x,player.y,mouse.x,mouse.y);
+    
+    
     
     if(!Scene.getScene('play').pause){
         playerUI();
@@ -1727,13 +1685,79 @@ function newMenuButton(type,x,w,y,h,txt){
 
 const mainMenu = {
     start:new uiButton(0,0,120,30,'Start Wave','menu'),
-
+    music:new uiButton(0,60,70,12,'Music','menu'),
+    pause:new uiButton(0,0,20,20,'⏸','menu'),
 };
+var testerImage = newImage('Assets/tester_person.jpg',{
+    x:window.innerWidth/2,
+    y:window.innerHeight/2,
+    anchorX:0.5, //percent?*
+    anchorY:0.5,
+    width:50,
+    height:50,
+    scale:1,
+});
 
+var music = newSound('Assets/lofi_lobby.mp3',{livePlayer:true,loop:true});
+mainMenu.music.onClick(throttle(()=>{
+    //console.log('toggle');
+    if(music.isPlaying){
+        music.stop();
+        //console.log('stopped');
+    }else{
+        music.play();
+        //console.log('playing');
+    }
+},0.15));
 
+mainMenu.pause.onClick(throttle(()=>{
+    //console.log('toggle');
+    if(music.isPlaying){
+        music.pause();
+        mainMenu.pause.text = '▶';
+        //console.log('stopped');
+    }else{
+        music.play();
+        mainMenu.pause.text = '⏸';
+        //console.log('playing');
+    }
+},0.15));
 
 new Scene('menu',70,()=>{
-    mainMenu.start.position('set',world.canvas.width/2,world.canvas.height/2);
+    let center = {
+        x:world.canvas.width/2,
+        y:world.canvas.height/2
+    };
+    testerImage.x = mouse.x;
+    testerImage.y = mouse.y;
+    testerImage.draw();
+    music.adjust({ volume: music.volume });
+    
+    if(!music.voice){
+        mainMenu.music.format.colors.base = '#0fb10f';
+    } else {
+        mainMenu.music.format.colors.base = '#b10f0f';
+    }
+    if(music.voice){
+        mainMenu.pause.rendering.visible = true;
+        push();
+        translate(window.innerWidth/2,75);
+        let _musicTime = {
+            now:music.voice.currentTime,
+            max:music.voice.duration,
+        };
+        let _w = 100;
+        let _dw = map(_musicTime.now,0,_musicTime.max,0,_w-1);
+        fill('#818181');
+        rect(0,0,_w,12);
+        noStroke();
+        fill('#13c54f');
+        rect(0.25-(_w/2 - _dw/2),0.25,_dw,11);
+        pop();
+    }else mainMenu.pause.rendering.visible = false;
+    mainMenu.start.position('set',center.x,center.y);
+    mainMenu.music.position('set',center.x,center.y+60);
+    mainMenu.pause.position('set',center.x+65,75);
     world.camera.unlink();
     world.camera.x = 0;
     world.camera.y = 0;
@@ -1742,6 +1766,7 @@ new Scene('menu',70,()=>{
     //controls and levels info
     colorText(`3 Waves\nControls: \nWASD + Space: movement \nShift: sprint \nLeft Click: shoot \nRight Click: melee \nR: reload \nQ: toggle fire mode \nY: arsonal display panel \n\n{While Arsonal is Open} \nUp and Down Arrow: switch weapons`,200,200);
     pop();
+    
     
     
     if(mainMenu.start.events.clicked)

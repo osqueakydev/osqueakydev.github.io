@@ -1,20 +1,24 @@
-class Animation {
-    constructor(source,frameSelection,frameCondition){
-        this.source = source; // files folder path
-        this.currentFrame = 0;
-        this.frames = [];
-        /* 
-            (frame)=>{
-                return <filesSource>+<fileSuffix>+frame#
-                'player_run_'+frame = 'player_run_1', 'player_run_2', ect...
-            }
-        */
-        this.__selectFrameFunction = frameSelection;
-        this.__frameSelectionFunction = frameCondition;
+class Song {
+    constructor(audioPath,coverPath,opts){
+        const _opts = {
+            audio:['x','y','volume','rate'],
+            image:['x','y','anchorX','anchorY','width','height','scale'],
+        };
+        if(typeof opts != 'object')opts = {aduio:{},image:{}};
+        if(opts.audio){
+            opts.audio.livePlayer = true;
+        }else{
+            opts.audio = {
+                livePlayer:true,
+            };
+        }
+        this.cover = newImage(coverPath,opts.image ? opts.image : opts);
+        this.audio = newSound(audioPath,opts.audio);
     }
-    get frame(){
-        const framePath = `./Assets/${this.source}/${this.__selectFrameFunction(this.currentFrame)}`;
-        return framePath;
+    render(){
+        push();
+        //make audio player -- blah
+        pop();
     }
-
 }
+
