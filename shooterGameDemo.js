@@ -1750,8 +1750,7 @@ new Scene('menu',70,()=>{
 
 
 
-var _music = loadSound('Assests/lofi_lobby.mp3');
-_music.play();
+
 
 
 
