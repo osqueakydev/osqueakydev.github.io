@@ -917,11 +917,11 @@ const game = {
 
 const arsonal = {
     //damage,range,velocity,firerate,fireType,burst,burstTime,reloadTime,mag,ammo,a
-    m4:new Gun('m4',20,600,150,16,2,1,1,3.5,30,120,ammoTypes['5.56']),
+    m4:new Gun('m4',15,600,150,16,2,1,1,3.5,30,120,ammoTypes['5.56']),
     //damage,range,velocity,firerate (bursts per second),burst,burstTime,reloadTime,amg,ammo,a
     m16:new Gun('m16',14,850,120,0.85,3,3,0.05,3.25,24,24*5,ammoTypes['5.56']),
     
-    mp5:new Gun('mp5',9,400,200,22,2,1,1,2.75,35,35*6,ammoTypes['9mm']),
+    mp5:new Gun('mp5',9,300,200,22,2,1,1,2.75,35,35*6,ammoTypes['9mm']),
 };
 
 
@@ -1178,29 +1178,64 @@ function groupByNestedObjectId(array) {
   return Object.values(groups).filter(group => group.length > 0);
 }
 
-const displayableStats = ['damage','range','velcoity','firerate','fireType','burst','burstTime','ammo','mag','reloadTime'];
+
 function arsonalDisplay(){
-    const weapons = Object.keys(arsonal);
-    const stats = Object.values(arsonal);
-    weapons.forEach((d,i)=>{
-        if(d!=player.weapon.id)return;
-        const statDisplays = Object.keys(stats[i]).filter(e => displayableStats.includes(e));
-        const statValues = Object.values(stats[i]);
-        push();
-        translate(player.x,300);
-        fill('#4b12a7');
-        rect(0,0,200,200);
-        textSize(18);
-        fill(255);
-        colorText(`${d}`,-20,-80);
-        statDisplays.forEach((display,index)=>{
-            const value = statValues[index];
-            textSize(12);
+    const displayableStats = {
+        damage:null,
+        range:null,
+        velocity:null,
+        firerate:null,
+        fireType:null,
+        burst:null,
+        ammo:null,
+        mag:null,
+        reloadTime:null,
+    };
+    Object.keys(arsonal).forEach(_gun => {
+        if(_gun == player.weapon.id){
+            push();
+            translate(player.x,300);
+            fill('#4b12a780');
+            rect(0,0,200,200);
             fill(255);
-            colorText(`${display}: ${value}`,80-170,-70+18*(index+1));
-        });
-        pop();
+            textSize(18);
+            colorText(`${player.weapon.id}`,-20,-80);
+            pop();
+            Object.keys(displayableStats).forEach((e,index) => {
+                var value = player.weapon[e];
+                
+                push();
+                translate(player.x,300);
+                
+                if(e == 'fireType'){
+                    switch(value){
+                        case 1:
+                            value = 'Semi-Auto';
+                        break;
+                        case 2:
+                            value = 'Full-Auto';
+                        break;
+                        case 3:
+                            value = 'Burst';
+                        break;
+                    }
+                }
+
+                fill(255);
+                textSize(12);
+                colorText(`${e}: ${value}`,-90,-70+18*(index+1));
+                pop();
+
+            });
+
+        }
     });
+    //['damage','range','velcoity','firerate','fireType','burst','burstTime','ammo','mag','reloadTime'];
+    
+    
+    
+    
+
 }
 
 
@@ -1570,7 +1605,8 @@ player.scripts.push((self)=>{
     
     if(getInput('key@q'))
         player.weapon.toggleFireType();
-    
+    if(getInput('key@p'))
+        Scene.getActiveScene().pause = true;
 
     if(getInput('key@r')){
         player.weapon.reload();
@@ -1617,6 +1653,7 @@ player.scripts.push((self)=>{
 
 
 function _gameReset(){
+    Scene.getActiveScene().pause = false;
     player.sprint.value = 50;
     player.health = 100;
     player.shield.value = 0;
@@ -1633,6 +1670,7 @@ function _gameReset(){
     });
     currentLevel = 0;
     player.position('set',200,200);
+    player.velocity('set');
     mainMenu.start.events.clicked = false;
     Scene.setScene('menu');
 }
@@ -1641,9 +1679,39 @@ function _gameReset(){
 
 
 const pauseMenu = {
-    resume:new uiButton(200,200,130,15,'67','play'),
+    resume:new uiButton(window.innerWidth/2,200,130,18,'Resume','play'),
+    mainMenu:new uiButton(window.innerWidth/2,225,130,18,'Main Menu / Quit','play'),
 };
 //pauseMenu.resume.ignoreCamera = false;
+
+pauseMenu.resume.onClick(throttle(()=>{
+    Scene.getActiveScene().pause = false;
+},0.15));
+
+pauseMenu.mainMenu.onClick(throttle(()=>{
+    _gameReset();
+},0.15));
+
+
+
+
+function _renderPauseMenu(){
+    let resume = pauseMenu.resume;
+    const paused = Scene.getActiveScene().pause;
+    let _menuGetters = Object.keys(pauseMenu);
+
+    
+
+    _menuGetters.forEach(i => {
+        let button = pauseMenu[i];
+        
+        button.rendering.visible = paused;
+        button.ignorePause = true;
+        
+    });
+}
+
+
 
 new Scene('play', '#4e4e8d', ()=>{
     if (World.controller && World.controller.connected) {
@@ -1652,18 +1720,18 @@ new Scene('play', '#4e4e8d', ()=>{
     
     if(player.health > 0)waveStart();
     else if(!gameSettings.immortal)_gameReset();
-    
+    _musicPlayer();
     push();
     translate(world.camera.x,world.camera.y);
     colorText(`player sprint: ${player.sprint.value} \nplayer speed: ${pad(player.velocity().x,2,2)}`,300,70);
     pop();
     
-    
+    _renderPauseMenu();
     
     if(!Scene.getScene('play').pause){
         playerUI();
     }else{
-
+        //_renderPauseMenu();
     }
 
 });
@@ -1679,14 +1747,14 @@ new Scene('play', '#4e4e8d', ()=>{
 //
 //
 
-function newMenuButton(type,x,w,y,h,txt){
+// function newMenuButton(type,x,w,y,h,txt){
 
-}
+// }
 
 const mainMenu = {
     start:new uiButton(0,0,120,30,'Start Wave','menu'),
     music:new uiButton(0,60,70,12,'Music','menu'),
-    pause:new uiButton(0,0,20,20,'⏸','menu'),
+    pause:new uiButton(0,0,20,20,'⏸','menu','play'),
 };
 var testerImage = newImage('Assets/tester_person.jpg',{
     x:window.innerWidth/2,
@@ -1701,15 +1769,18 @@ var testerImage = newImage('Assets/tester_person.jpg',{
 var music = newSound('Assets/lofi_lobby.mp3',{livePlayer:true,loop:true});
 mainMenu.music.onClick(throttle(()=>{
     //console.log('toggle');
-    if(music.isPlaying){
+    if(music.isPlaying || music.voice){
         music.stop();
+        
         //console.log('stopped');
     }else{
         music.play();
+        mainMenu.pause.text = '⏸';
         //console.log('playing');
     }
 },0.15));
 
+mainMenu.pause.ignorePause = true;
 mainMenu.pause.onClick(throttle(()=>{
     //console.log('toggle');
     if(music.isPlaying){
@@ -1721,6 +1792,36 @@ mainMenu.pause.onClick(throttle(()=>{
         mainMenu.pause.text = '⏸';
         //console.log('playing');
     }
+},0.15));
+
+function _musicPlayer(){
+    let self = mainMenu.pause;
+    if(music.voice){
+        self.rendering.visible = true;
+        push();
+        if(Scene.getActiveScene().id != 'play'){
+            translate(window.innerWidth/2,75);
+        }else{
+            translate(player.x,75);
+        }
+        let _musicTime = {
+            now:music.voice.currentTime,
+            max:music.voice.duration,
+        };
+        let _w = 100;
+        let _dw = map(_musicTime.now,0,_musicTime.max,0,_w-1);
+        fill('#818181');
+        rect(0,0,_w,12);
+        noStroke();
+        fill('#13c54f');
+        rect(0.25-(_w/2 - _dw/2),0.25,_dw,11);
+        pop();
+    }else self.rendering.visible = false;
+}
+
+
+mainMenu.start.onClick(throttle(e=>{
+    Scene.setScene('play');
 },0.15));
 
 new Scene('menu',70,()=>{
@@ -1738,23 +1839,7 @@ new Scene('menu',70,()=>{
     } else {
         mainMenu.music.format.colors.base = '#b10f0f';
     }
-    if(music.voice){
-        mainMenu.pause.rendering.visible = true;
-        push();
-        translate(window.innerWidth/2,75);
-        let _musicTime = {
-            now:music.voice.currentTime,
-            max:music.voice.duration,
-        };
-        let _w = 100;
-        let _dw = map(_musicTime.now,0,_musicTime.max,0,_w-1);
-        fill('#818181');
-        rect(0,0,_w,12);
-        noStroke();
-        fill('#13c54f');
-        rect(0.25-(_w/2 - _dw/2),0.25,_dw,11);
-        pop();
-    }else mainMenu.pause.rendering.visible = false;
+    _musicPlayer();
     mainMenu.start.position('set',center.x,center.y);
     mainMenu.music.position('set',center.x,center.y+60);
     mainMenu.pause.position('set',center.x+65,75);
@@ -1769,8 +1854,7 @@ new Scene('menu',70,()=>{
     
     
     
-    if(mainMenu.start.events.clicked)
-        Scene.setScene('play');
+    
 });
 
 

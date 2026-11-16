@@ -1,5 +1,5 @@
 // ============================================================
-// MALEngine.js  -  v1.4.0
+// MALEngine.js  -  v1.5.0
 // ------------------------------------------------------------
 // A small, dependency-free graphics + audio asset library.
 //
@@ -60,7 +60,7 @@
     // ============================================
     // CONSTANTS / ENVIRONMENT
     // ============================================
-    const VERSION  = '1.4.0';
+    const VERSION  = '1.5.0';
     const HAS_DOM  = typeof document !== 'undefined';
     const IS_FILE  = HAS_DOM && !!root.location && root.location.protocol === 'file:';
     const DEG2RAD  = Math.PI / 180;
@@ -651,8 +651,14 @@
         set rate(r) { this._rate = r; this._apply(); }
 
         get isPlaying()   { return this.state === 'playing'; }
-        get currentTime() { return this.element.currentTime; }
         get duration()    { return this.element.duration; }
+
+        // Position in seconds. Assign it to jump: voice.currentTime = 12.5 (same as seek).
+        get currentTime() { return this.element.currentTime; }
+        set currentTime(t) { this.seek(t); }
+        // Position as a fraction of the whole sound, 0..1 (assignable).
+        get progress() { const d = this.element.duration; return d > 0 && isFinite(d) ? this.element.currentTime / d : 0; }
+        set progress(f) { const d = this.element.duration; if (d > 0 && isFinite(d)) this.seek(clamp(f, 0, 1) * d); }
 
         // Pushes every live setting (volume, mute, loop, speed) to the <audio> element.
         _apply() {
@@ -703,7 +709,23 @@
             this._end(false);
             return this;
         }
-        seek(t)       { try { this.element.currentTime = t; } catch (e) { /* ignore */ } return this; }
+        /**
+         * Jump to a position (seconds). Playback carries on from there - nothing restarts.
+         * Out-of-range times are handled for you: a looping voice wraps around, anything else is clamped to 0..duration
+         * (seeking to the very end of a non-looping voice ends it).
+         */
+        seek(t) {
+            if (this.state === 'ended') return this;      // its <audio> element may already belong to another playback
+            t = +t;
+            if (isNaN(t)) return this;
+            const el = this.element, d = el.duration;
+            if (d > 0 && isFinite(d)) t = this.loop ? ((t % d) + d) % d : clamp(t, 0, d);
+            else t = Math.max(0, t);                      // length not known yet
+            try { el.currentTime = t; } catch (e) { /* ignore */ }
+            return this;
+        }
+        /** Fast-forward (positive) or rewind (negative) by `seconds` from where it is now. */
+        skip(seconds) { return this.seek(this.element.currentTime + (+seconds || 0)); }
         setVolume(v)  { this.volume = v; return this; }
         setRate(r)    { this.rate = r; return this; }
         setLoop(b)    { this.loop = b; return this; }
@@ -838,6 +860,33 @@
 
         _refresh() { if (this._claims) for (const v of this._claims.values()) v._apply(); }
 
+        // Position of the current playback in seconds. Assign it to jump (fast-forward / rewind).
+        // With no playback running, the value is remembered and the NEXT play() starts from there.
+        get currentTime() { const v = this.voice; return v ? v.currentTime : (this._startAt || 0); }
+        set currentTime(t) { this.seek(t); }
+        // Position as a fraction of the sound's length, 0..1 (assignable).
+        get progress() { const v = this.voice; return v ? v.progress : 0; }
+        set progress(f) {
+            const vs = this.voices;
+            if (vs.length) for (const v of vs) v.progress = f;
+            else if (this.duration > 0 && isFinite(this.duration)) this._startAt = clamp(f, 0, 1) * this.duration;
+        }
+
+        /** Jump every playing copy to `t` seconds (or, if nothing is playing, set where the next play() starts). Playback carries on - no restart. */
+        seek(t) {
+            const vs = this.voices;
+            if (vs.length) for (const v of vs) v.seek(t);
+            else if (!isNaN(+t)) this._startAt = Math.max(0, +t);
+            return this;
+        }
+        /** Fast-forward (positive) or rewind (negative) by `seconds`. */
+        skip(seconds) {
+            const vs = this.voices;
+            if (vs.length) for (const v of vs) v.skip(seconds);
+            else this._startAt = Math.max(0, (this._startAt || 0) + (+seconds || 0));
+            return this;
+        }
+
         /** The current playback (playing or paused), or null. With livePlayer this is THE playback. */
         get voice() { return this._claims.values().next().value || null; }
 
@@ -891,6 +940,8 @@
             }
             const el = this._acquire();
             if (!el) return null;
+            if (opts.start == null && this._startAt) { opts = Object.assign({}, opts, { start: this._startAt }); }   // seek() before play()
+            this._startAt = 0;
             const voice = new SoundVoice(this, el, opts);
             voice._start();
             return voice;
@@ -1293,7 +1344,7 @@
         par('volume', 'number 0..1', '1', 'Volume of this one playback (multiplied with sound, group and master volume).'),
         par('loop', 'boolean', 'the sound\'s loop', 'Repeat this playback forever.'),
         par('rate', 'number', 'the sound\'s rate', 'Playback speed for this playback.'),
-        par('start', 'number', '0', 'Start position in seconds.'),
+        par('start', 'number', '0 (or the position set by sound.seek() before play)', 'Start position in seconds.'),
         par('onend', 'function(voice)', 'none', 'Called when the sound reaches its natural end (not when stopped).'),
         par('restart', 'boolean', 'false', 'livePlayer sounds only: jump back to "start" (default 0) instead of carrying on from where it is.'),
         par('queue', 'boolean', 'false', 'If the browser blocks sound (no click/key/touch yet), wait and start on the first interaction instead of dropping it. Looping sounds always wait.')
@@ -1348,6 +1399,7 @@
             'Browsers block sound until the player clicks, presses a key or touches the page. Looping sounds (music) and play({ queue: true }) wait and start by themselves on that first interaction; other one-shot sounds are dropped. soundsUnlocked() tells you whether it has happened.',
             'Formats: pass a list of fallbacks, newSound(["a.ogg", "a.mp3"]); the first one the browser can play is used.',
             'Fades: sound.fadeTo(0.2, 2)   voice.fadeTo(0, 1, true)  (true = stop at the end).',
+            'Fast-forward / rewind / jump: sound.skip(10)  sound.skip(-10)  sound.currentTime = 45  sound.progress = 0.5  (works on a playing sound without restarting it; set before play() to choose where it starts).',
             'Works from file:// (plain <audio> elements; no Web Audio decoding is used).',
             'See also: newSound, SoundObject, SoundVoice, livePlayer, setMasterVolume, setGroupVolume, muteAll.'] },
         livePlayer: { kind: 'guide', sig: 'livePlayer', sum: 'Sounds that play as one live, never-stacking playback.', body: [
@@ -1358,7 +1410,7 @@
             '  hum.volume = 0.8;  hum.rate = 1.3;  hum.loop = false;   // all instant, playback never resets',
             '  hum.adjust({ volume: 0.2, rate: 0.9 });                  // several at once',
             'What counts as "playing": playing or paused. play() on a paused livePlayer resumes it where it stopped. Once it has ended (or stop() was called) the next play() starts it fresh.',
-            'To jump back to the start deliberately:  hum.play({ restart: true })   or   hum.voice.seek(0).',
+            'To jump back to the start deliberately:  hum.play({ restart: true })   or   hum.seek(0).  Fast-forward / rewind: hum.skip(10), hum.skip(-10), hum.currentTime = 30.',
             'Everything live: volume, rate, loop, muted, group and the master / group volumes (setMasterVolume, setGroupVolume) change a playing sound instantly - for ALL sounds, not just livePlayer ones.',
             'The one playback is available as  hum.voice  (a SoundVoice), so you can also fade it: hum.fadeTo(0, 2, true).',
             'Turn it on or off later with  hum.livePlayer = true / false  (voices already playing finish normally).',
@@ -1531,12 +1583,14 @@
                 prp('muted', 'boolean', 'This sound is muted (assign, or mute() / unmute()).'), prp('livePlayer', 'boolean', 'true = one never-stacking playback (see help("livePlayer")). Assign any time.'), prp('voice', 'SoundVoice | null', 'The current playback (playing or paused), or null. With livePlayer this is THE playback (read-only).'), prp('poolSize', 'number', 'Max overlapping copies.'), prp('onBusy', '"steal" | "ignore"', 'What to do when the pool is full.'), prp('sources', 'string[]', 'The paths given.'), prp('url', 'string', 'The path actually used (first playable format).'),
                 prp('loaded', 'boolean', 'true once the browser has loaded enough to play.'), prp('failed', 'boolean', 'true if loading failed.'), prp('unverified', 'boolean', 'true if the browser never confirmed loading (some phones wait for a tap) - it will still try to play.'),
                 prp('error', 'graphicsError | null', 'The load error, if any.'), prp('ready', 'Promise', 'Resolves (never rejects) when loading has finished.'), prp('element', 'HTMLAudioElement', 'The first underlying <audio> element.'),
-                prp('duration', 'number', 'Length in seconds (read-only).'), prp('isPlaying', 'boolean', 'Is any copy playing (read-only).'), prp('voices', 'SoundVoice[]', 'Currently playing or paused voices (read-only).')],
+                prp('duration', 'number', 'Length in seconds (read-only).'), prp('currentTime', 'number', 'Position of the current playback in seconds. ASSIGN it to fast-forward / rewind: sound.currentTime = 30. With nothing playing it sets where the next play() starts.'), prp('progress', 'number 0..1', 'Position as a fraction of the length (assignable): sound.progress = 0.5 jumps to the middle.'), prp('isPlaying', 'boolean', 'Is any copy playing (read-only).'), prp('voices', 'SoundVoice[]', 'Currently playing or paused voices (read-only).')],
             methods: {
                 play: mth('play(opts = {})', 'Starts one playback and returns it. If sound is blocked by the browser, looping sounds and queue:true wait for the first click / key / touch. On a livePlayer sound that is already playing (or paused) nothing new starts: the existing playback keeps going, opts.volume / rate / loop / onend are applied to it live, a paused one resumes, and the same SoundVoice is returned (opts.restart:true rewinds it).', PLAY_OPTS, 'SoundVoice | null (null if the sound failed to load, or onBusy is "ignore" and the pool is full)', 'const v = boom.play({ volume: 0.6, rate: 1.2 });'),
                 stop: mth('stop()', 'Stops every playing copy and rewinds.', [], 'this (chainable)', 'theme.stop();'),
                 pause: mth('pause()', 'Pauses every playing copy.', [], 'this (chainable)', 'theme.pause();'),
                 resume: mth('resume()', 'Resumes paused copies.', [], 'this (chainable)', 'theme.resume();'),
+                seek: mth('seek(t)', 'Jumps to a position. Every playing copy moves there and carries on playing - nothing restarts. With nothing playing, remembers t as the start position of the next play(). Out-of-range times are clamped (a looping sound wraps around instead).', [par('t', 'number', undefined, 'Position in seconds from the start.')], 'this (chainable)', 'song.seek(45);          // jump to 0:45\nsong.currentTime = 45;  // same thing'),
+                skip: mth('skip(seconds)', 'Fast-forwards (positive) or rewinds (negative) by an amount from the current position. Playback carries on.', [par('seconds', 'number', undefined, 'How far to move. Negative = rewind.')], 'this (chainable)', 'if (keyIsDown(RIGHT_ARROW)) song.skip(5);   // +5s\nif (keyIsDown(LEFT_ARROW))  song.skip(-5);  // -5s'),
                 setVolume: mth('setVolume(v)', 'Sets the base volume; playing voices update immediately (same as assigning sound.volume).', [par('v', 'number 0..1', undefined, 'New volume.')], 'this (chainable)', 'theme.setVolume(0.3);'),
                 setRate: mth('setRate(r)', 'Sets the playback speed; playing voices update immediately without restarting (same as assigning sound.rate).', [par('r', 'number', undefined, '1 = normal, 2 = double speed.')], 'this (chainable)', 'engine.setRate(1 + speed / 100);'),
                 setLoop: mth('setLoop(b)', 'Turns looping on or off live. A playing voice carries on and repeats (or stops repeating) at its next end.', [par('b', 'boolean', undefined, 'true = repeat.')], 'this (chainable)', 'theme.setLoop(false);'),
@@ -1551,12 +1605,13 @@
         SoundVoice: { kind: 'class', group: 'Classes', sig: 'SoundVoice', sum: 'One playback of a SoundObject, returned by sound.play(). Lets you stop, pause, seek or fade just that playback.',
             ctor: 'Made by SoundObject.play() - not created directly.',
             props: [prp('owner', 'SoundObject', 'The sound this playback belongs to.'), prp('element', 'HTMLAudioElement', 'The <audio> element playing it.'), prp('volume', 'number 0..1', 'Volume of this playback. Assign any time - updates instantly, playback continues.'), prp('loop', 'boolean', 'Repeats forever. Follows the sound\'s loop until you set it on the voice; assign any time.'), prp('rate', 'number', 'Playback speed. Follows the sound\'s rate until you set it on the voice; assign any time.'),
-                prp('onend', 'function | null', 'Called as (voice) at the natural end.'), prp('state', '"playing" | "paused" | "ended"', 'Current state.'), prp('isPlaying', 'boolean', 'state is "playing" (read-only).'), prp('currentTime', 'number', 'Position in seconds (read-only).'), prp('duration', 'number', 'Length in seconds (read-only).')],
+                prp('onend', 'function | null', 'Called as (voice) at the natural end.'), prp('state', '"playing" | "paused" | "ended"', 'Current state.'), prp('isPlaying', 'boolean', 'state is "playing" (read-only).'), prp('currentTime', 'number', 'Position in seconds. Assign it to fast-forward / rewind: voice.currentTime = 12.5.'), prp('progress', 'number 0..1', 'Position as a fraction of the length (assignable).'), prp('duration', 'number', 'Length in seconds (read-only).')],
             methods: {
                 pause: mth('pause()', 'Pauses this playback.', [], 'this', 'v.pause();'),
                 resume: mth('resume()', 'Continues a paused playback.', [], 'this', 'v.resume();'),
                 stop: mth('stop()', 'Stops and rewinds this playback and frees its pool slot. (onend does not fire for manual stops.)', [], 'this', 'v.stop();'),
-                seek: mth('seek(t)', 'Jumps to a position.', [par('t', 'number', undefined, 'Seconds from the start.')], 'this', 'v.seek(1.5);'),
+                seek: mth('seek(t)', 'Jumps this playback to a position and carries on from there (nothing restarts). A looping voice wraps out-of-range times around; otherwise they are clamped to 0..duration (seeking to the very end of a non-looping voice ends it). Does nothing once the voice has ended.', [par('t', 'number', undefined, 'Seconds from the start.')], 'this', 'v.seek(1.5);'),
+                skip: mth('skip(seconds)', 'Fast-forwards (positive) or rewinds (negative) from the current position.', [par('seconds', 'number', undefined, 'How far to move. Negative = rewind.')], 'this', 'v.skip(-10);   // back 10 seconds'),
                 setVolume: mth('setVolume(v)', 'Sets this playback\'s volume live (no restart).', [par('v', 'number 0..1', undefined, 'New volume.')], 'this', 'v.setVolume(0.5);'),
                 setRate: mth('setRate(r)', 'Sets this playback\'s speed live (no restart).', [par('r', 'number', undefined, '1 = normal.')], 'this', 'v.setRate(0.8);'),
                 setLoop: mth('setLoop(b)', 'Turns looping of this playback on or off live.', [par('b', 'boolean', undefined, 'true = repeat.')], 'this', 'v.setLoop(true);'),

@@ -86,7 +86,7 @@ class Scene extends shell{
     if(!Scene.started)return;
     
     let active = Scene.getActiveScene();
-    if(active.pause)return;
+    
     [active.objects, active.uiObjects].forEach(list => {
       list.slice().forEach(o => {
         if(o.deleted) {
@@ -94,14 +94,16 @@ class Scene extends shell{
           if(idx > -1) list.splice(idx, 1);
           return;
         }
-
+        // A paused scene only updates objects that opt out with ignorePause = true.
+        // (Rendering is untouched, see Scene.render(): everything is still drawn.)
+        let _update = !active.pause || !!o.ignorePause;
         if(typeof o.update == "function"){
           // Pass the fixed tick deltaTime to the object's update method
-          o.update(deltaTime);
+          if(_update)o.update(deltaTime);
         }
         if(o.scripts && o.scripts.length > 0){
           o.scripts.forEach(exe => {
-            if(typeof exe == "function")exe(o);
+            if(typeof exe == "function" && _update)exe(o);
           });
         }
       });
@@ -177,6 +179,21 @@ class Scene extends shell{
         (a.i - b.i))
       .map(e => e.o);
   }
+
+  // PAUSING. `scene.pause` (boolean) freezes the update() methods and scripts of
+  // every object in the scene except those with `ignorePause = true`. The scene
+  // keeps rendering, so the frozen objects are still drawn.
+  setPaused(state = true) {
+    this.pause = !!state;
+    return this.pause;
+  }
+  togglePause() {
+    return this.setPaused(!this.pause);
+  }
+  // Static shortcuts. With no id they act on the active scene.
+  static pause(id)  { const s = Scene.getScene(id); if(s) s.setPaused(true);  return s; }
+  static resume(id) { const s = Scene.getScene(id); if(s) s.setPaused(false); return s; }
+  static togglePause(id) { const s = Scene.getScene(id); if(s) s.togglePause(); return s; }
 
   // Method to add objects to scene
   addObject(obj) {

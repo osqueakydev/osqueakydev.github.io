@@ -4626,16 +4626,21 @@ class UIBounds {
 class UI extends geometryObject {
     static getEvents = {
         // Is the pointer over `obj` (and is `obj` the topmost UI object there)?
-        // `pos` is the Mouse, a {x, y} in canvas pixels, or another object.
+        // `pos` is the Mouse, a {x, y} point, or another object.
+        // With the Mouse, the position that is tested depends on obj.ignoreCamera:
+        //   ignoreCamera true  (the UI default) -> mouse.rawX / rawY  (where the pointer is on the screen)
+        //   ignoreCamera false                  -> mouse.x / y        (the pointer relative to the camera)
         hover:(pos = UI.mouseSource(),obj = this)=>{
-            const p = UI.pointerOf(pos);
-            if(!p || !obj || !obj.transform) return false;
+            if(!pos || !obj || !obj.transform) return false;
+            const p = UI.pointerOf(pos, obj);
+            if(!p) return false;
             if(obj.active === false) return false;
             if(obj.rendering && obj.rendering.visible === false) return false;
             if(!UI.contains(obj,p)) return false;
-            if(UI._consoleOwns(p)) return false;
+            // The dev console is drawn on the screen, so it is always tested with the screen position.
+            if(UI._consoleOwns(UI.pointerOf(pos) || p)) return false;
             // Overlapping UI objects: only the one on top is hovered.
-            if(UI.objects && UI.objects.includes(obj) && UI.topAt(p) !== obj) return false;
+            if(UI.objects && UI.objects.includes(obj) && UI.topAt(pos) !== obj) return false;
             return obj.enabled !== false;
         },
         // Hovered, and the mouse has just been clicked.
@@ -4700,25 +4705,55 @@ class UI extends geometryObject {
         return { x: x - ox, y: y - oy };
     }
 
-    /** Pointer position in canvas pixels, or null. */
-    static pointer() {
-        const m = UI.mouseSource();
-        return m ? UI.toCanvas(m.rawX, m.rawY) : null;
+    /** The camera's world position (the point drawn at the canvas's top-left corner). */
+    static _cameraPosition() {
+        return (typeof gameObject !== "undefined" && gameObject.cameraPosition) ? gameObject.cameraPosition() : { x: 0, y: 0 };
     }
 
-    /** Turns whatever getEvents was given into a canvas-pixel point (or null). */
-    static pointerOf(src) {
+    /**
+     * Pointer position in canvas pixels, or null.
+     *   UI.pointer()     -> where the pointer is on the screen (mouse.rawX / rawY)
+     *   UI.pointer(obj)  -> the pointer in obj's own space: the screen position when
+     *                       obj.ignoreCamera is true (the UI default), otherwise the
+     *                       position relative to the camera (mouse.x / y).
+     */
+    static pointer(obj = null) {
+        const m = UI.mouseSource();
+        return m ? UI.pointerOf(m, obj) : null;
+    }
+
+    /**
+     * Turns whatever getEvents was given into a canvas-pixel point (or null).
+     *   - the Mouse (or a mouse event: anything with rawX / rawY):
+     *       no `obj`, or obj.ignoreCamera !== false -> rawX / rawY, the position on the screen
+     *       obj.ignoreCamera === false              -> x / y, the position relative to the camera
+     *   - another object: its position
+     *   - a plain {x, y}: used as is (you already picked the space)
+     * The Mouse's raw values are client (page) pixels and x / y are client pixels plus the camera
+     * position, so both are shifted by the canvas's page offset to give canvas pixels.
+     */
+    static pointerOf(src, obj = null) {
         if (!src) return null;
         if (src.transform && src.transform.position) return { x: src.transform.position.x, y: src.transform.position.y };
-        if (typeof Mouse !== "undefined" && src instanceof Mouse) return UI.toCanvas(src.x, src.y);
+        if (isFinite(src.rawX) && isFinite(src.rawY)) {
+            const screenSpace = !obj || obj.ignoreCamera !== false;
+            if (screenSpace) return UI.toCanvas(src.rawX, src.rawY);
+            if (isFinite(src.x) && isFinite(src.y)) return UI.toCanvas(src.x, src.y);
+            const raw = UI.toCanvas(src.rawX, src.rawY), cam = UI._cameraPosition();   // an event without x / y
+            return { x: raw.x + cam.x, y: raw.y + cam.y };
+        }
         if (isFinite(src.x) && isFinite(src.y)) return { x: src.x, y: src.y };
         return null;
     }
 
-    /** Is the canvas point inside obj's rectangle? Takes obj's rotation into account. */
+    /**
+     * Is the point inside obj's rectangle? Takes obj's rotation into account.
+     * `p` must be in obj's own space (see pointerOf): the object's transform.position is a screen
+     * pixel when ignoreCamera is true and a camera-relative position when it is false.
+     */
     static contains(obj, p) {
         const t = obj.transform;
-        const _pos = obj.effectivePosition;
+        const _pos = t.position;
         let dx = p.x - _pos.x, dy = p.y - _pos.y;
         const r = t.radians;
         if (r) {                                   // undo the rotation, then test an upright box
@@ -4741,12 +4776,18 @@ class UI extends geometryObject {
         return UI.objects.filter((o) => !o.deleted && o.active && o.rendering.visible && o.scenes.includes(id));
     }
 
-    /** Topmost interactive UI object under a canvas point (draw order: layer, then creation). */
-    static topAt(p) {
-        if (!p) return null;
+    /**
+     * Topmost interactive UI object under the pointer (draw order: layer, then creation).
+     * `src` is the Mouse / a mouse event (each object is tested in its own space, see pointerOf)
+     * or a plain {x, y} point (tested as is against every object).
+     */
+    static topAt(src = UI.mouseSource()) {
+        if (!src) return null;
         const list = (typeof Scene !== "undefined" && Scene.renderOrder) ? Scene.renderOrder(UI.active()) : UI.active();
         for (let i = list.length - 1; i >= 0; i--) {
-            if (list[i].interactive !== false && UI.contains(list[i], p)) return list[i];
+            if (list[i].interactive === false) continue;
+            const p = UI.pointerOf(src, list[i]);
+            if (p && UI.contains(list[i], p)) return list[i];
         }
         return null;
     }
@@ -4755,8 +4796,8 @@ class UI extends geometryObject {
     static blocksInput(domain) {
         if (!Object.prototype.hasOwnProperty.call(UI, "_ready")) return false;
         if (domain !== "mouse") return false;
-        const p = UI.pointer();
-        return !!(UI._downOn || (p && UI.topAt(p)));
+        const m = UI.mouseSource();
+        return !!(UI._downOn || (m && UI.topAt(m)));
     }
 
     static _bindInput() {
@@ -4772,9 +4813,8 @@ class UI extends geometryObject {
     // fit inside one 20ms tick, so remember WHERE the press began from the events.
     static _onMouse(ev) {
         if (ev.button !== 0) return;
-        const p = UI.toCanvas(ev.rawX, ev.rawY);
         if (ev.type === "down") {
-            UI._downOn = UI.topAt(p);
+            UI._downOn = UI.topAt(ev);          // the event carries rawX / rawY (and x / y)
             UI.selected = UI._downOn;
         } else if (ev.type === "up") {
             UI._releasedOn = UI._downOn;
@@ -4792,9 +4832,10 @@ class UI extends geometryObject {
     /** Pointer cursor while the mouse is over something clickable (called by Scene.render). */
     static applyCursor() {
         if (typeof cursor !== "function") return;
-        const p = UI.pointer();
-        const over = !!(p && !UI._consoleOwns(p) && (UI._downOn || UI.topAt(p)) &&
-            (UI._downOn || UI.topAt(p)).cursorType === "pointer");
+        const m = UI.mouseSource();
+        const p = UI.pointer();                                    // screen position (the console lives there)
+        const top = m ? (UI._downOn || UI.topAt(m)) : null;
+        const over = !!(p && !UI._consoleOwns(p) && top && top.cursorType === "pointer");
         if (over !== UI._cursorSet) {
             cursor(over ? "pointer" : "default");
             UI._cursorSet = over;
@@ -4835,6 +4876,14 @@ class UI extends geometryObject {
             outline: [0.1, "black"],
             debug: false,            // true / { color, center }: outline the UIBounds like a hitbox
         };
+
+        // Where the object lives:
+        //   true  (default) SCREEN space. transform.position is a pixel on the canvas, the camera never moves
+        //         it, and the pointer is tested with mouse.rawX / rawY (where the mouse is on the screen).
+        //   false WORLD space, like a gameObject. transform.position is a world position, the object is drawn
+        //         in the camera's frame (it scrolls with the world) and the pointer is tested with
+        //         mouse.x / y (the mouse position relative to the camera).
+        this.ignoreCamera = true;
 
         this.active = true;          // false: skipped completely (no update / draw / input)
         this.enabled = true;         // false: drawn greyed out, ignores input
@@ -5014,17 +5063,20 @@ class UI extends geometryObject {
     // ---------- drawing ----------
 
     /**
-     * Draws in screen space. The body (fill, outline, shape, rotation, rounded
-     * corners, debug bounds) is drawn by gameObject's own render code; then
-     * draw() puts the object's content (a button's label) on top.
+     * Draws in screen space (ignoreCamera true, the default) or in the camera's frame
+     * (ignoreCamera false). The body (fill, outline, shape, rotation, rounded corners,
+     * debug bounds) is drawn by gameObject's own render code; then draw() puts the
+     * object's content (a button's label) on top.
      */
     render() {
         UI.renderLikeGameObject(this);
     }
 
     /**
-     * Runs gameObject.prototype.render on a UI object, in screen space (the
-     * camera transform is reset first, so UI ignores camera position / zoom).
+     * Runs gameObject.prototype.render on a UI object. The camera transform is reset first;
+     * with ignoreCamera true that leaves the object in screen space (it ignores the camera's
+     * position / zoom), with ignoreCamera false the camera's translate is applied again, so the
+     * object sits in the world and scrolls with it.
      * That code reads the hitbox list, collision sides and grounded - the
      * stand-ins the constructor created (UIBounds etc.) - so it works as is.
      */
@@ -5032,6 +5084,10 @@ class UI extends geometryObject {
         if (obj.deleted || !obj.active || !obj.rendering.visible) return;
         push();
         resetMatrix();
+        if (obj.ignoreCamera === false) {
+            const cam = UI._cameraPosition();
+            translate(-cam.x, -cam.y);
+        }
         rectMode(CENTER);
         try {
             obj._syncRendering();
@@ -5043,7 +5099,7 @@ class UI extends geometryObject {
     /** Subclasses set rendering.color / outline from their current state here. */
     _syncRendering() {}
 
-    /** Content drawn on top of the body, in screen space. Subclasses override. */
+    /** Content drawn on top of the body, in the object's own space (screen, or the camera's frame). Subclasses override. */
     draw() {}
 
     download() {
