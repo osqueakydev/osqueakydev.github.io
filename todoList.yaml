@@ -26,9 +26,10 @@ sections:
         done: true
       - text: Triangle on triangle collision doesn't work
         priority: high
-      - text: Ghost object collision
-        note: ghost objects shouldn't affect other objects (especially velocity) (ghost = !solid,!resolve,!pushable)
+      - text: Object collisions
+        note: have sub collisions lists for each side of the object to have accurate collisions data (determine if a single object was colliding with the target on a target side even with multiple objects colliding with object)
         priority: high 
+        done: true
       - text: High Velocity Collision
         note: ray-casting to detect collision as high velocities
       - text: Object collision with point method

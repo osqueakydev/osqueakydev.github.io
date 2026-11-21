@@ -15,16 +15,95 @@ const clock = () => (typeof World !== "undefined" && World.time != null)
     ? World.time
     : performance.now() / 1000;
 
-function throttle(fn, seconds) {
+/**
+ * Pick the clock a timer should run on.
+ *   undefined / null   real time (keeps running while a scene is paused)
+ *   'play' (scene id)  that scene's clock: stops while the scene is paused
+ *   'active'           whichever scene is active when the timer is checked
+ *   a Scene            that scene's clock
+ *   a function         your own () => seconds
+ * Scene clocks are Scene.time (scene.js).
+ */
+function resolveClock(src) {
+    if (typeof src === "function") return src;
+    if (src == null) return clock;
+    if (typeof src === "string" && typeof Scene !== "undefined") {
+        const id = src === "active" ? undefined : src;
+        return () => {
+            const s = Scene.getScene(id);
+            return s && typeof s.time === "number" ? s.time : clock();
+        };
+    }
+    if (typeof src === "object" && "time" in src) return () => src.time;   // a Scene
+    return clock;
+}
+
+/**
+ * Run `fn` at most once every `seconds`.
+ * `clockSource` (optional, see resolveClock) picks the clock. Give it a scene
+ * (e.g. 'play') to make the cooldown stop while that scene is paused.
+ */
+function throttle(fn, seconds, clockSource) {
+    const now = resolveClock(clockSource);
     let last = -Infinity;
     return (...args) => {
-        const now = clock();
-        if (now - last >= seconds) {      // enough time has passed since the last real run
-            last = now;
+        const t = now();
+        if (t - last >= seconds) {        // enough time has passed since the last real run
+            last = t;
             return fn(...args);
         }
     };
 }
+
+/* ------------------------------------------------------------------
+ * Game timers: setTimeout / setInterval replacements that run on a
+ * scene clock, so they freeze while that scene is paused.
+ *
+ *   const t = gameTimeout(fn, 2, 'play');   // fn after 2 seconds of 'play' running
+ *   const i = gameInterval(fn, 0.5, 'play');
+ *   clearGameTimer(t);                      // or t.cancel()
+ * ------------------------------------------------------------------ */
+const _gameTimers = new Set();
+let _gameTimerFrame = null;
+// requestAnimationFrame in the browser; a short setTimeout where there is none (Node / unit tests).
+const _nextFrame = (cb) => (typeof requestAnimationFrame === "function")
+    ? requestAnimationFrame(cb)
+    : setTimeout(cb, 16);
+
+function _pumpGameTimers() {
+    _gameTimerFrame = null;
+    for (const t of [..._gameTimers]) {
+        if (t.cancelled) { _gameTimers.delete(t); continue; }
+        if (t.every == null) {
+            if (t.now() >= t.due) { _gameTimers.delete(t); try { t.fn(); } catch (e) { console.error(e); } }
+        } else {
+            let guard = 0;                // catch up if frames were slow, but never spin forever
+            while (!t.cancelled && t.now() >= t.due && guard++ < 1000) {
+                t.due += Math.max(t.every, 1e-6);
+                try { t.fn(); } catch (e) { console.error(e); }
+            }
+        }
+    }
+    if (_gameTimers.size) _gameTimerFrame = _nextFrame(_pumpGameTimers);
+}
+function _startGameTimer(t) {
+    _gameTimers.add(t);
+    if (_gameTimerFrame == null) _gameTimerFrame = _nextFrame(_pumpGameTimers);
+    return t;
+}
+function gameTimeout(fn, seconds, clockSource) {
+    const now = resolveClock(clockSource);
+    const t = { fn, now, due: now() + seconds, every: null, cancelled: false,
+                cancel() { t.cancelled = true; _gameTimers.delete(t); } };
+    return _startGameTimer(t);
+}
+function gameInterval(fn, seconds, clockSource) {
+    const now = resolveClock(clockSource);
+    const t = { fn, now, due: now() + seconds, every: seconds, cancelled: false,
+                cancel() { t.cancelled = true; _gameTimers.delete(t); } };
+    return _startGameTimer(t);
+}
+function clearGameTimer(t) { if (t && typeof t.cancel === "function") t.cancel(); }
 
 function validNumber(n){
     const returner = Number(n);
@@ -42,30 +121,33 @@ function validNumber(n){
  * @param intervalSeconds gap between each fire (defaults to totalSeconds / count)
  * @param opts.leading    if true, first fire happens immediately (t=0);
  *                        if false, first fire is delayed by intervalSeconds
+ * @param opts.clock      clock source (see resolveClock). With a scene such as 'play'
+ *                        both the cooldown and the pending fires stop while it is paused.
  */
-function burstThrottle(fn, totalSeconds, count, intervalSeconds = totalSeconds / count, { leading = true } = {}) {
+function burstThrottle(fn, totalSeconds, count, intervalSeconds = totalSeconds / count, { leading = true, clock: clockSource } = {}) {
+    const now = resolveClock(clockSource);
     let cycleStart = -Infinity;
     const timers = new Set();
 
     const throttled = (...args) => {
-        const now = clock();
-        if (now - cycleStart < totalSeconds) return false;   // still cooling down
-        cycleStart = now;
+        const t = now();
+        if (t - cycleStart < totalSeconds) return false;   // still cooling down
+        cycleStart = t;
 
         for (let i = 0; i < count; i++) {
             const offset = leading ? i : i + 1;
-            const id = setTimeout(() => {
-                timers.delete(id);
+            const timer = gameTimeout(() => {
+                timers.delete(timer);
                 fn(...args);
-            }, offset * intervalSeconds * 1000);
-            timers.add(id);
+            }, offset * intervalSeconds, clockSource);
+            timers.add(timer);
         }
         return true;
     };
 
     // Optional: cancel pending burst fires (e.g., on teardown)
     throttled.cancel = () => {
-        for (const id of timers) clearTimeout(id);
+        for (const timer of timers) timer.cancel();
         timers.clear();
     };
 
@@ -1096,8 +1178,6 @@ Object.defineProperty(Object.prototype, 'all', {
 //     writable: true,
 //     configurable: true
 // });
-
-
 
 
 

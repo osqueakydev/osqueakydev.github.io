@@ -4144,6 +4144,7 @@ class Entity extends gameObject {
         living:()=>{
             let pck = {
                 health:100,
+                maxHealth:100,
                 flash:{
                     percent:0.5,
                     color:'#ff0000',

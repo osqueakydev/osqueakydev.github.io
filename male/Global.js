@@ -467,12 +467,12 @@ class World {
             },
             input: { device: 'keyboard', style: 'gyro' },
             binds: {
-                left:  { keyboard: 'a', controller: 'stick@left:x' },
-                right: { keyboard: 'd', controller: 'stick@left:x' },
-                up:    { keyboard: ['w', 'space'], controller: ['stick@left:y', 'button@select'] },
-                down:  { keyboard: ['s', 'shift'], controller: ['stick@left:y', 'button@back'] },
-                interact: { keyboard: 'mouse@left', controller: 'trigger@right' },
-                use:      { keyboard: 'mouse@right', controller: 'trigger@left' },
+                left:  { keyboard: 'a', controller: 'stick@left:x', mobile:'drag@x' },
+                right: { keyboard: 'd', controller: 'stick@left:x', mobile:'drag@x' },
+                up:    { keyboard: ['w', 'space'], controller: ['stick@left:y', 'button@select'], mobile:'drag@y' },
+                down:  { keyboard: ['s', 'shift'], controller: ['stick@left:y', 'button@back'], mobile:'drag@y' },
+                interact: { keyboard: 'mouse@left', controller: 'trigger@right', mobile:'mobile@click' },
+                use:      { keyboard: 'mouse@right', controller: 'trigger@left', mobile:'mobile@held' },
             },
             // gameNotification:{
             //     position:{
@@ -835,4 +835,15 @@ class World {
         if (!bind) return false;
         return bind[this.defaults.input.device];
     }
+
+
+    writeBind(type,obj){
+        const bs = World.defaults.binds;
+        if(bs[type]){
+            bs[type].keyboard = obj.keyboard??bs[type].keyboard;
+            bs[type].controller = obj.controller??bs[type].controller;
+            bs[type].mobile = obj.mobile??bs[type].mobile;
+        }
+    }
+
 }

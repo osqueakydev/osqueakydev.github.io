@@ -87,6 +87,15 @@ class Scene extends shell{
     
     let active = Scene.getActiveScene();
     
+    active.scripts.forEach(exe => {
+      if(typeof exe == "object"){
+        const _validCallers = ['exe','call','callback','function'];
+        for(let id of _validCallers){
+          if(typeof exe[id] == 'function') exe[id](deltaTime,active);
+        }
+      }
+    });
+
     [active.objects, active.uiObjects].forEach(list => {
       list.slice().forEach(o => {
         if(o.deleted) {
@@ -183,6 +192,39 @@ class Scene extends shell{
   // PAUSING. `scene.pause` (boolean) freezes the update() methods and scripts of
   // every object in the scene except those with `ignorePause = true`. The scene
   // keeps rendering, so the frozen objects are still drawn.
+  //
+  // SCENE CLOCK. `scene.time` is the number of seconds this scene has been
+  // RUNNING: it stops counting while the scene is paused and carries on from the
+  // same value when it resumes. Timers that should freeze with a pause (gun
+  // reloads, cooldowns, throttle(), gameTimeout()...) read this clock instead of
+  // real time. `scene.pause` is an accessor, so `scene.pause = true` and
+  // setPaused(true) both stop the clock.
+  static _clock() {
+    return (typeof clock === "function") ? clock() : performance.now() / 1000;
+  }
+  get pause() { return this._paused; }
+  set pause(v) {
+    v = !!v;
+    if (v === this._paused) return;
+    const now = Scene._clock();
+    if (v) {
+      this._pausedAt = now;
+    } else {
+      this._pausedTotal += now - this._pausedAt;
+      this._pausedAt = null;
+    }
+    this._paused = v;
+  }
+  /** Seconds this scene has run, not counting time spent paused. */
+  get time() {
+    const now = Scene._clock();
+    return now - this._pausedTotal - (this._paused ? now - this._pausedAt : 0);
+  }
+  /** Scene clock by id (no id = the active scene). Falls back to real time if the scene doesn't exist. */
+  static time(id) {
+    const s = Scene.getScene(id);
+    return s ? s.time : Scene._clock();
+  }
   setPaused(state = true) {
     this.pause = !!state;
     return this.pause;
@@ -234,6 +276,10 @@ class Scene extends shell{
     this.tags = [];
     this.activeTime = 0;
     this.startTime = -1;
+    // Pause clock (see `pause` / `time` below). Must exist before `pause` is first set.
+    this._paused = false;
+    this._pausedAt = null;
+    this._pausedTotal = 0;
     this.pause = false;
     this.scripts = [...scripts];
     this.push(this);
