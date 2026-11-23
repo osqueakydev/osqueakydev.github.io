@@ -995,6 +995,39 @@ function playerUI(){
 
 
 
+    //Ammo / reload arc: a ring around the mouse.
+    //Normally it shows the magazine (rounds left); while reloading it fills clockwise over reloadTime.
+    {
+        const __gun = player.weapon;
+        let __p, __col;
+        if(__gun.reloading){
+            const __rt = __gun.firearm ? __gun.firearm.reloadTime : 0;
+            const __left = __gun._t.reloadEnd - __gun._now();
+            __p = __rt > 0 ? constrain(1 - __left/__rt,0,1) : 1;
+            __col = '#ffffff';
+        }else{
+            __p = __gun.mag > 0 ? constrain(__gun._mag/__gun.mag,0,1) : 0;
+            ammoColor.value = __p;
+            __col = ammoColor.actualize('#ff0000');
+        }
+        push();
+        angleMode(RADIANS);
+        translate(player.ignoreCamera ? mouse.rawX : mouse.x,
+                  player.ignoreCamera ? mouse.rawY : mouse.y);
+        noFill();
+        strokeCap(ROUND);
+        const __d = 44;
+        strokeWeight(5);
+        stroke(0,0,0,110);
+        ellipse(0,0,__d,__d);
+        if(__p > 0){
+            strokeWeight(3);
+            stroke(__col);
+            arc(0,0,__d,__d,-HALF_PI,-HALF_PI + TWO_PI*__p);
+        }
+        pop();
+    }
+
     //crosshair
     push();
     translate(player.x,player.y);
@@ -1218,6 +1251,7 @@ function _gameReset(){
     _ak.forEach(e => {
         arsonal[e].reset();
     });
+    obsticals.filter(e => e.collision.pushable)[0].position('set',-420,475);
     currentLevel = 0;
     player.position('set',200,200);
     player.velocity('set');
@@ -1229,18 +1263,24 @@ function _gameReset(){
 
 
 const pauseMenu = {
-    resume:new uiButton(window.innerWidth/2,200,130,18,'Resume','play'),
-    mainMenu:new uiButton(window.innerWidth/2,225,130,18,'Main Menu / Quit','play'),
+    resume:new uiButton(window.innerWidth/2,200,160,18,'Resume','play'),
+    mainMenu:new uiButton(window.innerWidth/2,225,160,18,'Main Menu / Quit','play'),
+    homePage:new uiButton(window.innerWidth/2,250,160,18,'Return to Home Page','play'),
 };
 //pauseMenu.resume.ignoreCamera = false;
 
-pauseMenu.resume.onClick(throttle(()=>{
+pauseMenu.resume.onClick(()=>{
     Scene.getActiveScene().pause = false;
-},0.15));
+});
 
-pauseMenu.mainMenu.onClick(throttle(()=>{
+pauseMenu.mainMenu.onClick(()=>{
     _gameReset();
-},0.15));
+});
+
+// back to the game picker (index.html); relative, so it works on GitHub Pages and file://
+pauseMenu.homePage.onClick(()=>{
+    window.location.href = 'index.html';
+});
 
 
 
@@ -1317,7 +1357,7 @@ var testerImage = newImage('Assets/tester_person.jpg',{
 });
 
 var music = newSound('Assets/lofi_lobby.mp3',{livePlayer:true,loop:true});
-mainMenu.music.onClick(throttle(()=>{
+mainMenu.music.onClick(()=>{
     //console.log('toggle');
     if(music.isPlaying || music.voice){
         music.stop();
@@ -1328,10 +1368,10 @@ mainMenu.music.onClick(throttle(()=>{
         mainMenu.pause.text = '⏸';
         //console.log('playing');
     }
-},0.15));
+});
 
 mainMenu.pause.ignorePause = true;
-mainMenu.pause.onClick(throttle(()=>{
+mainMenu.pause.onClick(()=>{
     //console.log('toggle');
     if(music.isPlaying){
         music.pause();
@@ -1342,7 +1382,7 @@ mainMenu.pause.onClick(throttle(()=>{
         mainMenu.pause.text = '⏸';
         //console.log('playing');
     }
-},0.15));
+});
 
 function _musicPlayer(){
     let self = mainMenu.pause;
@@ -1370,9 +1410,9 @@ function _musicPlayer(){
 }
 
 
-mainMenu.start.onClick(throttle(e=>{
+mainMenu.start.onClick(e=>{
     Scene.setScene('play');
-},0.15));
+});
 
 new Scene('menu',70,()=>{
     let center = {

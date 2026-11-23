@@ -62,6 +62,15 @@ class Scene extends shell{
         active.objects.push(o);
       }
     });
+    // tileMatrix isn't a gameObject, so it has its own registry; add it too.
+    if(typeof tileMatrix !== "undefined" && tileMatrix.matrices) {
+      tileMatrix.matrices.forEach(o => {
+        if(o.deleted) return;
+        if(o.scenes.includes(active.id) && !active.objects.includes(o)) {
+          active.objects.push(o);
+        }
+      });
+    }
     // UI objects (Text / button / inputField) are kept in their own array,
     // separate from the game objects: scene.uiObjects. It is drawn after
     // (= over) scene.objects, see Scene.render().
@@ -118,6 +127,13 @@ class Scene extends shell{
       });
     });
 
+    // Late pass: objects with lateUpdate(dt) run it after EVERY object has
+    // updated this tick (tileMatrix keeps its linked objects in bounds here).
+    active.objects.slice().forEach(o => {
+      if(o.deleted || typeof o.lateUpdate != "function") return;
+      if(!active.pause || o.ignorePause) o.lateUpdate(deltaTime);
+    });
+
     // Button bookkeeping AFTER scripts ran, so scripts see one-tick flags
     // like button.clicked before they are cleared.
     if(typeof UI !== "undefined" && UI.tick) UI.tick(deltaTime);
@@ -141,8 +157,8 @@ class Scene extends shell{
     active.scripts.forEach(exe => {
       if(typeof exe == "function")exe();
     });
-    const preCameraObjects = Scene.renderOrder(active.objects).filter(e => e.rendering.draw.ignoreCamera);
-    const postCameraObjects = Scene.renderOrder(active.objects).filter(e => !e.rendering.draw.ignoreCamera)
+    const preCameraObjects = Scene.renderOrder(active.objects).filter(e => e.rendering?.draw?.ignoreCamera);
+    const postCameraObjects = Scene.renderOrder(active.objects).filter(e => !e.rendering?.draw?.ignoreCamera)
     //1) game objects, bottom to top (by layer, then list order)
     preCameraObjects.forEach(o => {
       // o.scripts.forEach(exe => {

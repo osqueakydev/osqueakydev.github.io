@@ -2,43 +2,98 @@
 <html lang="en">
   <head>
     <!--
-      Local p5.js copies so this page runs directly from disk
-      (file://) without needing an internet connection.
-      These are the files that came with the downloaded project:
-        - p5.js            (unminified)
-        - p5.sound.min.js  (minified)
-      Place both in ./libs/ next to index.html.
+      Home page / game picker. Plain HTML + CSS with relative links, so it
+      works on GitHub Pages and straight from disk (file://).
+      Each game lives on its own page; their pause menus link back here.
     -->
-    <script src="libs/p5.js"></script>
-    <script src="libs/MAL_Graphics_Engine.js"></script>
-    
-    
-    <link rel="stylesheet" type="text/css" href="style.css">
     <meta charset="utf-8" />
-    <title>MALE Engine</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MALE Engine - Choose a Game</title>
+    <link rel="icon" href="favicon.ico">
+    <style>
+      :root {
+        --bg: #12131c;
+        --panel: #1d1f2d;
+        --panel-hover: #262a3d;
+        --border: #34384f;
+        --text: #eceef7;
+        --muted: #9aa0bb;
+        --accent: #ffd75e;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        min-height: 100vh;
+        background: radial-gradient(ellipse at top, #22253a 0%, var(--bg) 65%);
+        color: var(--text);
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 48px 20px;
+      }
+      header { text-align: center; margin-bottom: 40px; }
+      h1 { margin: 0 0 8px; font-size: 2.4rem; letter-spacing: 0.04em; }
+      header p { margin: 0; color: var(--muted); }
+      .games {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 24px;
+        width: 100%;
+        max-width: 760px;
+      }
+      .game {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 28px 26px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        color: inherit;
+        text-decoration: none;
+        transition: background 0.15s, border-color 0.15s, transform 0.15s;
+      }
+      .game:hover, .game:focus-visible {
+        background: var(--panel-hover);
+        border-color: var(--accent);
+        transform: translateY(-3px);
+        outline: none;
+      }
+      .game h2 { margin: 0; font-size: 1.4rem; }
+      .game p { margin: 0; color: var(--muted); line-height: 1.45; flex: 1; }
+      .play {
+        align-self: flex-start;
+        margin-top: 8px;
+        padding: 8px 18px;
+        border-radius: 6px;
+        background: var(--accent);
+        color: #1a1a1a;
+        font-weight: 600;
+      }
+      footer { margin-top: 40px; color: var(--muted); font-size: 0.85rem; }
+    </style>
   </head>
   <body>
-    <main>
+    <header>
+      <h1>MALE Engine</h1>
+      <p>Choose a game to play</p>
+    </header>
+
+    <main class="games">
+      <a class="game" href="shooter_demo.html">
+        <h2>Shooter Demo</h2>
+        <p>Survive waves of enemies with guns and a melee swing.</p>
+        <span class="play">Play</span>
+      </a>
+      <a class="game" href="world_of_theaya.html">
+        <h2>World of Theaya</h2>
+        <p>Explore, gather, farm and craft in an open world.</p>
+        <span class="play">Play</span>
+      </a>
     </main>
 
-    <!-- Engine core (load order matters) -->
-    <script src="male/Global.js"></script>
-    <script src="male/helperFunctions.js"></script>
-    <script src="male/inputs.js"></script>
-    <script src="male/Camera.js"></script>
-    <script src="male/item.js"></script>
-    <script src="male/objects.js"></script>
-    <script src="male/scene.js"></script>
-
-    <!-- Debug tools: YAML reader, embedded data files, and the console -->
-    <script src="male/yaml.js"></script>
-    <script src="male/devFiles.js"></script>
-    <script src="male/devConsole.js"></script>
-
-    <!-- Unit tests must come after all engine classes exist -->
-    <script src="male/unitTests.js"></script>
-
-    <!-- Game entry point last -->
-    <script src="shooterGameDemo.js"></script>
+    <footer>Open a game's pause menu to come back here.</footer>
   </body>
 </html>

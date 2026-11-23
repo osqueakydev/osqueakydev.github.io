@@ -35,6 +35,9 @@ class numberError extends Error {
 class worldError extends Error {
     constructor(msg) { super(msg); this.name = "MALE"; }
 }
+class tileMatrixError extends Error {
+    constructor(msg) { super(msg); this.name = "TileMatrix"; }
+}
 
 // ============================================
 // UTILITY FUNCTIONS

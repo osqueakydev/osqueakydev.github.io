@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Running
 
-- Open `index.html` (entry: `shooterGameDemo.js`) or `world_of_theaya.html` (entry: `world_of_theaya.js`) in a browser. To run a different game, change the last `<script>` tag of the HTML. `main.js` is an older debugger-scene demo and `blank.js` is a scratch file.
+- `index.html` is the home page / game picker (plain HTML, no engine scripts; it is the GitHub Pages landing page). It links to `shooter_demo.html` (entry: `shooterGameDemo.js`) and `world_of_theaya.html` (entry: `world_of_theaya.js`). Each game's pause menu has a "Return to Home Page" button that goes back to `index.html`. To add a game, copy a game page, change its last `<script>` tag, and add a card to `index.html`. `main.js` is an older debugger-scene demo and `blank.js` is a scratch file.
 - Run the YAML embed sync while editing `.yaml` files: `node tools/syncDevFiles.js --watch` (one-shot: drop `--watch`). It rewrites `male/devFiles.js`, which is auto-generated, so never edit it by hand.
 
 ## Tests
@@ -20,7 +20,7 @@ The tests run in the browser; there is no CLI runner. They live in `male/unitTes
 
 ## Architecture
 
-**Script load order matters** (see `index.html`): `libs/p5.js` → `libs/MAL_Graphics_Engine.js` → `male/Global.js` → `helperFunctions.js` → `inputs.js` → `Camera.js` → `item.js` → `objects.js` → `scene.js` → `yaml.js` → `devFiles.js` → `devConsole.js` → `unitTests.js` → game file. Later files rely on globals from earlier ones.
+**Script load order matters** (see `shooter_demo.html`): `libs/p5.js` → `libs/MAL_Graphics_Engine.js` → `male/Global.js` → `helperFunctions.js` → `inputs.js` → `Camera.js` → `item.js` → `objects.js` → `scene.js` → `yaml.js` → `devFiles.js` → `devConsole.js` → `unitTests.js` → game file. Later files rely on globals from earlier ones.
 
 **Game file pattern**: the game file defines p5's `setup()`, which does `world = new World(tickLength)`. Game objects and `new Scene(...)` are usually created at the top level of the game file, *before* `setup()` runs. Objects register themselves in static registries (`shell.allObjects`, `gameObject.objects`, `Hitbox.objects`, `UI.objects`, `Scene.scenes`), and each one names the scene ids it belongs to through trailing `...scenes` constructor args. Pick the shown scene with `Scene.setScene(id)`.
 
@@ -37,7 +37,7 @@ Every object's `update(dt)` and its `obj.scripts` (functions called with `(obj)`
 
 **Object hierarchy (`male/objects.js`)**: `shell` (registry/ids) → `geometryObject` (holds a `Transform` plus a `Renderer`) → `Hitbox`, `genericObject`, `gameObject`, `UI` / `Button`. Then `gameObject` → `Entity` (which takes behaviour bundles through `entity.package(Entity.Packages.living(), ...)`) → `Player`. Hitbox shapes are `rect`, `circle`, `ellipse` and `triangle`. The collision math lives in `helperFunctions.js`. Collision resolution is a known weak area (see `notes.txt` and `todoList.yaml`).
 
-**Items (`male/item.js`)**: `Inventory`, plus an `Item` base class built from components, with a large subclass tree (`Weapon` → `RangedWeapon` → `Gun`, `Tool`, `Armor`, `Consumable`, `Placeable`, `Skill`, …). `Gun` owns the bullets in flight (`Gun.bullets`).
+**Items (`male/item.js`)**: `Inventory`, plus the `Item` class. An item is built from components: subclasses of `ItemComponent` (`Durability`, `Attack`, `Mining`, `Ranged`, `Firearm`, `Placement`, `Ability`, …) whose constructors take their values. Add them with `item.package(new Durability(500), Item.Packages.melee(...), …)`, which works like `Entity.package`. Read them with `item.get('attack')` / `item.components.attack`. Hooks are methods on the component (`canUse`, `onUse`, `onTick`, `onPlace`, `onBreak`, or any `onX` for `item.emit('x')`). Item types are plain subclasses whose constructor calls `super(name)` and then `this.package(...)`, for example `Weapon` → `Sword`, `Tool`, `Armor`, `Consumable`, `Placeable`, `Skill`, `Gun`. Every constructor parameter (component or item) needs a default, because `Item.fromJSON` calls `new Type(name)`. `clone()` doesn't call the constructor; `_afterBuild()` sets up runtime state. `Gun` owns the bullets in flight (`Gun.bullets`).
 
 **Input (`male/inputs.js`)**: read input through `getInput('key@r')`, `getInput('key@shift')`, `mouse@left`, `stick@left:x`, `button@...` and so on. `KeyboardStick` gives a virtual analog stick. Default bindings are in `world.defaults.binds`. When the DevConsole is open, `getInput` returns neutral values.
 
