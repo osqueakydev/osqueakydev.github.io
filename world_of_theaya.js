@@ -7,6 +7,8 @@ function setup(){
 //world.writeBind('interact',{ keyboard:'e', controller: '' });
 
 
+
+
 /*
     tempature things:
     temp measure unit: cc
@@ -18,6 +20,10 @@ function setup(){
     rain 
     storm
     drought
+
+
+
+
 */
 // Rates are "per minute of weather" for the whole map (see the Weather
 // section further down). Anything left out falls back to 0 / off.
@@ -154,7 +160,158 @@ const _worldTimeCycle = {
 
 
 
+//advenced game element definition
+const __customDefine = {
+    name:'',//<display name of element>
+    id:'',//<back end element ID>
+    type:'',//<type of game element> [item, block, food/consumable, terrian, crop, creature, workbench, container]
+    //for elements that can be placed in inventory
+    stack:100,
+    //any item/block or resource that can be in the inventory
+    tags:[], //craft/workbench tags
 
+    //for elements that are blocks or terrian (terrian is a block that can spawn naturally)
+        tier:1, //tier tool needed to break, tier of -1 is unbreakable
+        tool:'axe', //type of tool needed
+        //drop:'self', //self -> drops itself as an item
+        //drop: <item id> -> drops that item
+        //list of items to drop given item id and chance to drop
+        drop: [
+            
+            {
+                id:'', //item id
+                chance:0.5, //drop chance
+                linked:true, //links this chance to another with the linked property, cant drop multiple items at once
+                priority:1, //in the chance that both chances are true at the same time, choose the one with higher priority
+                /*
+                    Example:
+                    what the current gravel drop model would look like in this system:
+                    drop:[
+                        {
+                            id:'self',
+                            chance:1,
+                            linked:true,
+                            priority:0,
+                        },
+                        {
+                            id:'flint',
+                            chance:0.5,
+                            amount:[1,2], 
+                            linked:true,
+                            priority:1,
+                        }
+                    ]
+                */
+            },
+            {
+                id:'',
+                chance:0.25,
+                amount:[1,2],
+            }
+        ],
+    //for elements that are terrian (pairs with the block)
+        biome:'all', //what biome this terrian block belongs to
+        textureType:'', //how its rendered: floor (what grass is), tree, block, crop, hill (hill refers to how sand dunes are displayed)
+        emitLight:0, //amount of light that it emits
+        cellBehavior:'', //behaviors are: empty, passable, entityPass, blocked;
+        /*
+            empty = cell is free and there isn't a block
+            passable = cell has block but player can pass through 
+            entityPass = cell has block but player cant pass through
+            blocked = cell has block, nothing can pass
+        */
+    //include texture color properties to be able to set the color texture of the game element
+
+    //food
+        hunger:0,
+        satruation:0,
+        regen:[1,10], //amount, time in seconds
+        instantHealth:0, //health granted on consumtion
+        poison:{
+            chance:0, //percent
+            apply:[1,5], //damage, time in seconds
+        },
+    //crop
+        require:'farmland', //type of block/cell it requires to be planted
+        //other valid require inputs: none, water (for rice)
+        thirst:0, //amount of water units consumed per in game day
+        growth:{
+            stages:[
+                { yeild: 0, time: 1},
+                { yeild: 1, time: 2, done: true },
+                { yeild: 0, time: 3, rot: true },
+                {
+                    yeild:0,
+                    time: 4,
+                    clear:true, //auto clear the rotted crop
+                }
+            ],
+        },
+        crop:'', //item id for when crop is harvested
+
+    //creature (uses already existing object defining properties)
+        health:100,
+        hp:60, 
+        speed:2.0, 
+        size:20, 
+        mover:'animal', 
+        behaviour:'hostile', //behavoirs: passive, hostile, neutral; neutral means that the creature will fight back if provoked
+        sight:4, 
+        damage:14, 
+        cooldown:1.8, 
+        color:'#5a3e2b', 
+        biomes:['forest'], 
+        count:4, 
+        xp:60, 
+        drops:[
+            {
+                id:'raw_bear_meat',
+                chance:1,
+                amount:[1,2]
+            },
+            {
+                id:'raw_leather',
+                chance:0.5,
+                amount:[2,3],
+                //can have 'linked' modifier
+            },
+        ],
+        actions:{
+            // example action to add to the cell action menu for milking a cow
+            // milk:{
+            //     display:"Milk @animal", //@ refers to the source of this action, in this example the cow
+            //     require:'item',
+            //     id:'bucket',
+            //     result:'item',
+            //     id:'milk_bucket',
+            // },
+        },
+    //container (for chests basically, or workbenches with container slots)
+        //slots:20, for normal chest
+        slots:{
+            input:4,
+            output:2,
+            //fuel: 1
+        },
+    
+    //workbench
+        workbenchTag:'', //workbench
+        recipes:[
+            {
+                input:{
+                    //item_id: amount required
+                    cloth:2,
+                },
+                /*
+                fuel:10, //time to cook/smelt (for workbenches with container machanics)
+                */
+                output:{
+                    //item_id: amount given
+                    silk:1,
+                },
+            }
+        ], //recipe objects
+}
 
 
 // The item sets a material can be made into. They match the `SET` of the
@@ -487,16 +644,20 @@ for(const cls of [sTool, sWeapon, sArmor, sMaterial]){
 /*
     * Skills
     Active Runner
-      increases sprint charge+
-      decreases sprint decay-
-      increases sprint speed+`
+      increases movement speed+
+      decrease hunger from moving-
     
-      Steel Stomach
+    Steel Stomach
+      decrease poison duration and damage
+      decreases hunger decay
+
+    Hunter
+      can sneak by holding "shift"
+      makes player less detectable and noticable to other entities
+    
+    
+    
 */
-
-
-
-
 
 
 
@@ -581,19 +742,46 @@ for(const cls of [sTool, sWeapon, sArmor, sMaterial]){
  *     use their own fixed hash values, not the seed.
  * ===================================================================== */
 const SCENE_ID        = 'theaya';
-const WORLD_SEED      = 0;      // change for a different world
-const MAP_COLS        = 56;
-const MAP_ROWS        = 48;
+const WORLD_SEED      = 5201314;      // the menu's backdrop world, and the tutorial world
+/**
+ * How this page was opened (the URL hash), see the start menu in section 12b:
+ *   (nothing)      the start menu: Tutorial / New Game
+ *   #new           the start menu, already on the New Game screen
+ *   #tutorial      the tutorial (a calm copy of the WORLD_SEED world)
+ *   #seed=<int>    a new game on that seed
+ * The world is made once at load, so the menu starts a game by setting the hash and reloading the page
+ * (that also keeps Restart on the same seed, and works from file://).
+ */
+const LAUNCH = (() => {
+    let h = '';
+    try { h = decodeURIComponent((location.hash || '').replace(/^#/, '')); } catch(e){ h = ''; }
+    if(h === 'tutorial') return { mode:'tutorial', seed: WORLD_SEED };
+    if(h === 'new') return { mode:'menu', view:'new', seed: WORLD_SEED };
+    const m = /^seed=(-?\d+)$/.exec(h);
+    if(m) return { mode:'new', seed: Number(m[1]) | 0 };
+    return { mode:'menu', view:'main', seed: WORLD_SEED };
+})();
+/** Text from the seed box -> a whole number. Blank = random, digits = that number, anything else = a number made from the text. */
+function parseSeed(text){
+    const t = String(text ?? '').trim();
+    if(!t) return Math.floor(Math.random() * 2147483647);
+    if(/^-?\d+$/.test(t)) return Number(t) | 0;
+    let h = 2166136261;
+    for(let k = 0; k < t.length; k++){ h ^= t.charCodeAt(k); h = Math.imul(h, 16777619); }
+    return Math.abs(h | 0);
+}
+const MAP_COLS        = 84;
+const MAP_ROWS        = 72;
 const HEX_W           = 40;        // pointy-top hex cell width  (px)
 const HEX_H           = 46;        // pointy-top hex cell height (px)
-const MINE_TIME_SCALE = 2.0;       // seconds to break hardness 1 (stone) at speed 1, see miningInfo()
+const MINE_TIME_SCALE = 1.5;       // seconds to break hardness 1 (stone) at speed 1, see miningInfo()
 const HAND_SPEED      = 0.6;       // mining speed with no fitting tool
-const WATER_UNITS     = 5;         // canteen fills a water cell holds before it runs dry
+const WATER_UNITS     = 15;         // canteen fills a water cell holds before it runs dry
 const WATER_REFILL_SECONDS = 120;  // a dry water cell refills after this long (0 = never)
 const SURVIVAL = {
     hungerRate: 0.05,     // per second (saturation drains first)
     thirstRate: 0.06,     // per second
-    regenRate:  0.15,      // health per second while well fed and watered
+    regenRate:  0.2,      // health per second while well fed and watered
     regenAbove: 70,       // hunger and thirst must both be at least this to regenerate
     saturationMax: 20,
     sip: 25,              // thirst restored per canteen sip
@@ -601,6 +789,7 @@ const SURVIVAL = {
     hotThirst: 0.05,      // ...by 5% per degree
     coldBelow: 10,        // below this temperature hunger drains faster...
     coldHunger: 0.03,     // ...by 3% per degree
+    moveHunger: 0.3,      // walking costs this much extra hunger (Active Runner shrinks it)
 };
 const FARM = {
     waterMax: 100,        // water a farmland holds (like a planter box)
@@ -610,12 +799,32 @@ const FARM = {
     dryDays: 1,           // a crop that stays dry this long withers
     wildChance: 0.006,    // chance a land cell has a wild crop
     wildMin: 2,           // every crop appears at least this many times in the world
-    fernSeedChance: 0.25, // chance gathering a fern also gives a crop seed (tier 1 or lower)
+    fernSeedChance: 0.125, // chance gathering a fern also gives a crop seed (tier 1 or lower)
     fernSeedMaxTier: 1,
     floodMax: 400,        // a bucket can overfill farmland up to this much water...
     floodAt: 3,           // ...and above this many times waterMax...
     floodDays: 0.5,       // ...for this long (half a day = 7.5 min) it turns into a water source
     overflowDrain: 40,    // water above waterMax soaks away this much faster per in game day
+    maxStack: 5,          // most crops one farmland cell can grow at once (plant more seeds on a young crop)
+    stackThirst: 0.5,     // each extra crop in a stack makes the cell drink this much more (x1 + 0.5 per extra)
+    // Farmland next to a water cell is irrigated: it stays full and never needs the bucket.
+};
+/** Experience: killing hostiles gives far more than anything else. Level n -> n+1 costs levelBase + levelStep*(n-1) + levelCurve*(n-1)^2. */
+const XP = {
+    levelBase: 100, levelStep: 40, levelCurve: 6,
+    healthPerLevel: 1,     // max health gained per level (and a heal of the same size)
+    hostile: 30,           // default xp for a hostile creature (a creature's own `xp` wins)
+    passive: 3,            // default xp for an animal
+    harvest: 2,            // per crop harvested from a ripe plant (a stack of 3 gives 3x)
+    till: 0.5,             // tilling soil
+    plantRatio: 0.5,       // xp per plant when sowing
+    stone: 1, tree: 1,     // mining plain blocks...
+    ore: 3, oreTier: 2,    // ...ore: 3 + 2 per tier of the ore block
+};
+/** Drying rack: no fuel, input / output slots, one recipe at a time (see MACHINES.rack). */
+const RACK = {
+    input: 4, fuel: 1, output: 2,   // the fuel slot is unused (hidden)
+    fuelSeconds: 0,
 };
 const FORGE = {
     input: 4, fuel: 1, output: 2,   // container slots
@@ -640,9 +849,10 @@ const TORCH = {
     greaseLight: 210, greaseSafe: 7,    // grease torch: glow radius (px), no spawns within (cells)
     lampLight: 270,   lampSafe: 10,     // oil lamp
 };
-const CAVE_DARKNESS = 0.62;   // caves are this dark even at noon (torches light them up)
+const CAVE_DARKNESS = 0.7;   // caves are this dark even at noon (torches light them up)
+const CAVE_OUTSIDE_DARKNESS = 0.9;   // standing inside a cave, everything outside it gets this dark (the day outside is hard to see from in there)
 const ORE_HEART = {
-    days: 0.75,           // in game days between ores a heart grows (randomized +-30%)
+    days: 1.05,           // in game days between ores a heart grows (randomized +-30%)
     radius: 2,            // it grows ore in cave walls / bare cave floor this close to it
     max: 6,               // stops while this many of its ore are already around it
     perOre: 12,           // one heart per this many ore blocks of a type at world creation (1..3 per ore)
@@ -684,8 +894,8 @@ const MATERIAL_COLORS = {
 };
 /** Colors of the naturalMaterials.nature blocks. */
 const NATURE_COLORS = {
-    grass:'#62a046', dirt:'#7d5b3b', gravel:'#8f8b86', sand:'#dcc581', stone:'#808080', calcite:'#e6e1d3',
-    clay:'#b0745a',
+    grass:'#62a046', dirt:'#634529', gravel:'#5e5851', sand:'#dcc581', stone:'#808080', calcite:'#e6e1d3',
+    clay:'#ca9179',
 };
 /**
  * How each crop looks. `produce` = item / fruit color, `plant` = leaves,
@@ -698,25 +908,25 @@ const CROP_LOOKS = {
     tomato:     { produce:'#e0402e', plant:'#4f8a3a', form:'vine',  shape:'round' },
     carrot:     { produce:'#ee8a26', plant:'#5fae3f', form:'root',  shape:'root' },
     potato:     { produce:'#c9a16a', plant:'#4d8f3d', form:'leafy', shape:'round' },
-    rice:       { produce:'#efe9d6', plant:'#8fbf5a', form:'grain', shape:'grain' },
+    rice:       { produce:'#f7eac2', plant:'#8fbf5a', form:'grain', shape:'grain' },
     corn:       { produce:'#f0cf3a', plant:'#6aa63a', form:'tall',  shape:'grain' },
     ginger:     { produce:'#d9b57a', plant:'#5e9c48', form:'stalk', shape:'root' },
     pepper:     { produce:'#d8302a', plant:'#3f7f36', form:'vine',  shape:'pepper' },
     pumpkin:    { produce:'#e8862a', plant:'#4c8a34', form:'vine',  shape:'round', big:true },
     lettuce:    { produce:'#8fd05a', plant:'#7cc04e', form:'leafy', shape:'leaf' },
-    onion:      { produce:'#d8b0d0', plant:'#6cae4a', form:'root',  shape:'round' },
-    garlic:     { produce:'#efe6d8', plant:'#7fb35a', form:'root',  shape:'round' },
+    onion:      { produce:'#e28ed1', plant:'#6cae4a', form:'root',  shape:'round' },
+    garlic:     { produce:'#f3d9ae', plant:'#7fb35a', form:'root',  shape:'round' },
     nuts:       { produce:'#9a6a3a', plant:'#3f7a3a', form:'bush',  shape:'round' },
     sugar_cane: { produce:'#b8d88a', plant:'#7fbf5a', form:'stalk', shape:'stalk' },
-    hemp:       { produce:'#a7b86a', plant:'#5e8f3e', form:'tall',  shape:'stalk' },
+    hemp:       { produce:'#a7b86a', plant:'#5e8f3e', form:'tall',  shape:'leaf' },
 };
 const cropLook = id => CROP_LOOKS[id] ?? { produce:'#c9a16a', plant:'#5fae3f', form:'leafy', shape:'round' };
 /** Colors of each naturalMaterials.logs type (tree, log, planks, sapling). */
 const LOG_LOOKS = {
-    oak:   { bark:'#6b4a2b', leaves:'#3f8a34', planks:'#b98d55' },
-    ash:   { bark:'#8c8378', leaves:'#73ad55', planks:'#d8c69c' },
-    pine:  { bark:'#5a3d26', leaves:'#245f3b', planks:'#caa36b', conifer:true },
-    cedar: { bark:'#7b3f2a', leaves:'#4f8046', planks:'#b8673e' },
+    oak:   { bark:'#6b4a2b', leaves:'#35af22', planks:'#b98d55' },
+    ash:   { bark:'#8c8378', leaves:'#b2ee94', planks:'#d8c69c' },
+    pine:  { bark:'#5a3d26', leaves:'#134b28', planks:'#caa36b', conifer:true },
+    cedar: { bark:'#7b3f2a', leaves:'#66ff4b', planks:'#b8673e' },
 };
 const logTypes = Object.keys(naturalMaterials.logs);
 const logLook  = t => LOG_LOOKS[t] ?? { bark:'#6b4a2b', leaves:'#3f8a34', planks:'#b98d55' };
@@ -751,19 +961,19 @@ const biomes = {
     plains: {
         floor: FLOOR,
         temprature:20,
-        shoreClay:0.14,
+        shoreClay:0.34,
         resources: { oak_tree:0.03, cedar_tree:0.02, ash_tree:0.006, berry_bush:0.025, fern:0.05, dirt:0.02, stone:0.012, gravel:0.006 },
     },
     forest: {
         floor: FLOOR, floorColor: '#4d8a39',
         temprature:17,
-        shoreClay:0.1,
+        shoreClay:0.15,
         resources: { oak_tree:0.08, ash_tree:0.06, pine_tree:0.05, cedar_tree:0.025, berry_bush:0.03, fern:0.08, dirt:0.015 },
     },
     desert: {
         floor: FLOOR, floorColor: '#a7a25c',
         temprature:28,
-        shoreClay:0.06,
+        shoreClay:0.2,
         fill: { block:'sand', share:0.78 },
         dunes: { block:'sand_dune', share:0.22 },   // ridges of impassable dunes in the sand
         resources: { cedar_tree:0.03, fern:0.006, stone:0.02, gravel:0.02 },
@@ -776,7 +986,7 @@ const biomes = {
     cave: {
         within: ['plains', 'forest', 'desert'],
         temprature:15,
-        floor: FLOOR, floorColor: '#3e4636',
+        floor: FLOOR, floorColor: '#dadada',
         wall: 'stone',
         wallMix: { calcite:0.10, gravel:0.07, dirt:0.04 },
         openness: 0.38,
@@ -1077,7 +1287,7 @@ const Crops = {
             id, hunger: c.hunger ?? 0, saturation: c.satruation ?? c.saturation ?? 0, tier: c.tier ?? 0,
             edible: c.edible !== false, health: c.health ?? 0, regrow: !!c.regrow,
             seeds: range(c.seeds ?? [1, 2]), seed: c.seed ?? `${id}_seeds`, farm: c.farm !== false,
-            water: c.water ?? FARM.cropWater, rarity: c.rarity ?? 1,
+            produce: c.produce ?? id, water: c.water ?? FARM.cropWater, rarity: c.rarity ?? 1,
             biomes: c.biomes ?? ['plains', 'forest'], nearWater: !!c.nearWater, stages,
         };
         out.ripeAge = (stages.find(s => s.done) || stages[stages.length - 1] || { time: 0 }).time;
@@ -1198,6 +1408,32 @@ class sPickaxe extends sTool {
 for(const cls of [BlockItem, Canteen, Bucket, CropSeedItem, sPickaxe]) Item.registerClass(cls);
 
 /**
+ * Stack sizes. One rule decides every item's stack (instead of a number per definition); Items.define
+ * applies it to every item, so new items need no stack number (unless they're an exception: STACK_OF).
+ *   resources (materials, ores, ingots, logs, planks, seeds, ammo, natural blocks...) and wall blocks: STACK.resource
+ *   food (anything you can eat, raw or cooked):                                                        STACK.food
+ *   building blocks (stations, doors, torches, lamps, boats, chests...):                               STACK.building
+ * Tools, weapons, armor, canteens and buckets don't stack (they stay 1).
+ */
+const STACK = { resource: 100, food: 24, building: 16 };
+const BUILDING_KINDS = ['station', 'door', 'torch', 'lamp', 'boat'];   // everything else placeable (walls, glass, planks, saplings, soil...) is a resource
+const STACK_OF = { glass: 16, torch: 50, grease_torch: 50 };   // single items that differ from their category
+function stackFor(item){
+    if(item.getMaxStack() <= 1) return null;
+    if(STACK_OF[item.id] != null) return STACK_OF[item.id];
+    if(item.has('consume')) return STACK.food;
+    if(item instanceof BlockItem){
+        const def = Blocks.get(item.block);
+        if(def && (BUILDING_KINDS.includes(def.kind) || item.id === 'berry_bush')) return STACK.building;
+    }
+    return STACK.resource;
+}
+/** Wraps an item factory so what it makes gets its stack size from stackFor(). */
+function withStack(make){
+    return i => { const item = make(i), s = stackFor(item), m = item.get('maxStack'); if(s != null && m) m.size = s; return item; };
+}
+
+/**
  * Item registry: every item the game can create, by id.
  *   Items.define(id, id => new SomeItem(id, ...), { color, icon, accent })
  *   Items.create(id, count)
@@ -1209,7 +1445,7 @@ const Items = {
     defs: new Map(),
     _max: new Map(),
     define(id, factory, look = {}){
-        this.defs.set(id, { factory, look: Object.assign({ color:'#cccccc', icon:'raw' }, look) });
+        this.defs.set(id, { factory: withStack(factory), look: Object.assign({ color:'#cccccc', icon:'raw' }, look) });
         return this;
     },
     has(id){ return this.defs.has(id); },
@@ -1231,14 +1467,252 @@ const Items = {
     },
 };
 
+/* ---------------------------------------------------------------------
+ * 3b. Game elements: defineElement(spec)
+ *   ONE function creates every kind of game element from a plain spec object. The items, blocks,
+ *   foods, stations, creatures and skills of the game are all written this way (search for
+ *   defineElement(s) below). A spec (fields not listed for a type are ignored):
+ *
+ *   every element
+ *     id          back-end id (required)          name   display name (default: prettified id)
+ *     type        'item' | 'block' | 'terrain' | 'food' | 'crop' | 'creature' | 'workbench' | 'container' | 'skill' | 'upgrade'
+ *     stack       stack size, only to override the category rule (STACK: resources 100, food 24, building blocks 16)
+ *     tags        item tags ('#tag' in recipes)    color, accent, icon, shape   how it is drawn (item icons / blocks / creatures)
+ *     recipe      { at:'workbench', input:{ item_id: amount }, count:1, time }  (or a list of them) how the item is crafted (not for creatures / crops / skills)
+ *
+ *   item        tier (material tier), fuel (burn units: 1 plank, 2 log, 4 coal), build: id => Item (your own class)
+ *   food        hunger, satruation, instantHealth, regen:[health/s, seconds], poison:{ chance, apply:[damage/s, seconds] }
+ *   block       tool ('pickaxe'|'axe'|'shovel'|'hoe'), tier (tool tier needed, 0 = hands, -1 = unbreakable), hardness (1 = stone, <0 instant),
+ *   terrain     drop ('self' | item id | [{ id, chance, amount:[min, max], linked, priority }]; `linked` entries can't drop together,
+ *               the hit with the highest priority wins), cellBehavior ('empty'|'passable'|'entityPass'|'blocked'), emitLight (glow px),
+ *               kind ('wall'|'door'|'glass'|'torch'|'lamp'|...), textureType ('block'|'hill'), siege, safe, passableFor, solid, grow, init...
+ *               terrain also takes biome + spawn (fraction of that biome's free land cells it appears on). `item:false` = no item.
+ *   crop        require ('farmland'|'none'|'water'), thirst (water per day), growth:{ stages:[{ yeild, time, done, rot }] },
+ *               crop (the harvested item id, default: the id), seed, seeds:[min, max], tier (hoe tier), regrow, rarity, biomes + the food fields
+ *   creature    hp, speed, size, mover, behaviour ('passive'|'hostile'|'neutral'), sight, damage, cooldown, biomes, count, xp, skittish, dark,
+ *               breaks, drops:[{ id, chance, amount, linked, priority }],
+ *               actions:{ key:{ display:'Milk @', require:{ item:'bucket' }, result:{ item:'milk_bucket', count:1 }, cooldown:30 } }  (@ = the creature)
+ *   workbench   workbenchTag (recipe station key, default: id), recipes:[{ input:{}, output:{ id: n, ... }, time }],
+ *   container   slots: n (a chest)  or  { input, output, fuel } (a machine: slots, one recipe at a time; no `fuel` = needs no fuel; no slots = craft menu),
+ *               verb, also:['hand'], draw(g, def, block, c, poly, i), machine:{ fuelSeconds, verb, idle, hint, accepts, light, fancyFirst, blurb, listTitle }
+ *   skill       max, desc: level => text, onPick(level)      (upgrade = a stat pick; both appear in the level-up choices)
+ *
+ *   defineElement(spec) / defineElements([spec, ...]) / defineRecipes(station, [[output, input, opts], ...])
+ * --------------------------------------------------------------------- */
+const BUILT_KINDS = ['station', 'wall', 'door', 'glass', 'planks', 'torch', 'lamp', 'farmland', 'boat'];   // kinds that count as "built by the player" (see `built`)
+const Blocks = {
+    defs: {},
+    define(id, def){
+        const d = this.defs[id] = Object.assign({
+            id, name: prettify(id), kind:'block', tag:'stone', solid:true,
+            hardness:1, tier:0, tool:null, drops:[[id, 1]], color:'#888888',
+        }, def);
+        if(d.built === undefined) d.built = BUILT_KINDS.includes(d.kind);
+        return d;
+    },
+    get(id){ return this.defs[id] ?? null; },
+};
+const Content = {
+    ready: false, queue: [],
+    /** Run fn once the Recipe class exists (now, when it already does). */
+    later(fn){ if(this.ready) fn(); else this.queue.push(fn); },
+    flush(){ this.ready = true; for(const fn of this.queue.splice(0)) fn(); },
+};
+const STATION_TITLES = {};   // station -> panel title
+const CRAFT_STATIONS = [];   // stations that are plain recipe menus
+const STATION_VERBS  = {};   // craft station -> button text ('Craft', 'Weave'...)
+const STATION_ALSO   = {};   // craft station -> other recipe stations shown in its menu (workbench also lists 'hand')
+const STATION_DRAW   = {};   // station -> (g, def, block, c, poly, cellIndex) custom drawing on the terrain buffer
+const MACHINES       = {};   // machine station -> { cfg, cells(), verb, idle, fancyFirst, noFuel, light, hint, blurb, listTitle }
+const TERRAIN_SPAWNS = [];   // { id, biome, chance } custom terrain scattered by generateWorld
+/** The cells (indexes) holding a placed machine of this kind. */
+function machineSet(kind){ return Theaya.machines[kind] || (Theaya.machines[kind] = new Set()); }
+/** Default input filter of a machine: anything that is an ingredient of one of its recipes. */
+const acceptsFor = station => item => !!item && Recipe.for(station).some(r => Object.keys(r.inputs).some(k => Recipe.matches(item, k)));
+/** Input / fuel / output slots of a machine (cfg = { input, fuel, output }). */
+const machineState = (cfg, accepts) => ({
+    input:  new Box(cfg.input,  accepts),
+    fuel:   new Box(cfg.fuel,   item => fuelValue(item) > 0),
+    output: new Box(cfg.output, () => false),
+    burn: 0, burnMax: 0, progress: 0, active: null, lit: false, status: 'Idle',
+});
+
+/** `look` for Items.define from a spec: only the keys that were given (so the defaults stay). */
+function lookOf(o){
+    const look = {};
+    for(const k of ['color', 'icon', 'accent', 'shape', 'piece']) if(o[k] !== undefined) look[k] = o[k];
+    return look;
+}
+/** A spec's `drop` as a drop list ('self' -> the element's own id). Legacy [id, min, max, chance, instead] rows pass through. */
+function normDrops(drop, selfId){
+    if(drop === undefined || drop === 'self') return [[selfId, 1]];
+    if(drop === null || drop === 'none') return [];
+    if(typeof drop === 'string') return [[drop, 1]];
+    return drop.map(e => Array.isArray(e) ? e : Object.assign({}, e, { id: e.id === 'self' ? selfId : e.id }));
+}
+/** Recipe station + output from a spec's `recipe`: { at, input, count, time }. */
+function addSpecRecipe(r, output){
+    Content.later(() => Recipe.add(r.at ?? 'workbench', r.count > 1 ? `${output}:${r.count}` : output, r.input ?? r.inputs ?? {}, { time: r.time, id: r.recipeId }));
+}
+/** A station's `recipes`: [{ input, output:{ id: n, ... }, time }]. The first output is the result, a second one a chance byproduct. */
+function addSpecRecipes(station, list){
+    Content.later(() => {
+        for(const r of list){
+            const outs = Object.entries(r.output ?? {});
+            if(!outs.length) continue;
+            const [oid, n] = outs[0], opts = { time: r.time ?? r.fuel, id: r.recipeId };
+            if(outs[1]) opts.byproduct = { id: outs[1][0], count: outs[1][1], chance: r.chance ?? 1 };
+            Recipe.add(station, n > 1 ? `${oid}:${n}` : oid, r.input ?? r.inputs ?? {}, opts);
+        }
+    });
+}
+/** defineRecipes('workbench', [[output, inputs, opts], ...]): several Recipe.add at once. */
+function defineRecipes(station, list){
+    Content.later(() => { for(const [out, inputs, opts] of list) Recipe.add(station, out, inputs, opts); });
+}
+
+const ELEMENT_TYPES = {};
+const ELEMENT_ALIASES = { terrian:'terrain', consumable:'food', crafting:'workbench' };
+function defineElement(spec){
+    if(!spec || !spec.id) throw new Error('defineElement: every element needs an id.');
+    const type = ELEMENT_ALIASES[spec.type] ?? spec.type ?? 'item', handler = ELEMENT_TYPES[type];
+    if(!handler) throw new Error(`defineElement('${spec.id}'): unknown type '${spec.type}' (use ${Object.keys(ELEMENT_TYPES).join(', ')}).`);
+    if(spec.stack != null) STACK_OF[spec.id] = spec.stack;
+    handler(spec, type);
+    if(spec.recipe && !['creature', 'crop', 'skill', 'upgrade'].includes(type)) for(const r of [].concat(spec.recipe)) addSpecRecipe(r, spec.id);
+    return spec;
+}
+function defineElements(list){ for(const spec of list) defineElement(spec); return list; }
+
+ELEMENT_TYPES.item = o => {
+    Items.define(o.id, i => {
+        const it = o.build ? o.build(i) : new Material(i, 64, o.tier ?? 0);
+        if(o.fuel) it.package(new Fuel(o.fuel));
+        if(o.tags && o.tags.length) it.addTag(...o.tags);
+        return it;
+    }, lookOf(o));
+};
+const POISON_DEFAULT = [1.5, 12];   // damage per second, seconds
+ELEMENT_TYPES.food = o => {
+    Items.define(o.id, i => {
+        const it = new Consumable(i, o.hunger ?? 0, o.satruation ?? o.saturation ?? 0, o.instantHealth ?? 0).addTag('food', ...(o.tags ?? []));
+        if(o.poison){
+            const p = typeof o.poison === 'number' ? { chance: o.poison } : o.poison, [dps, secs] = p.apply ?? POISON_DEFAULT;
+            it.package(new Poisonous(p.chance ?? 1, secs, dps));
+        }
+        if(o.regen) it.package(new Regeneration(o.regen[0], o.regen[1]));
+        return it;
+    }, Object.assign({ icon:'food' }, lookOf(o)));
+};
+
+const TEXTURE_KIND = { block:'block', hill:'soil' };   // textureType -> how the block is drawn (a block `kind`)
+const TOOL_TAG = { pickaxe:'stone', axe:'wood', shovel:'dirt', hoe:'plant' };
+const BEHAVIOR = {   // cellBehavior -> Blocks fields
+    empty:      { solid:false, replaceable:true },     // nothing in the way, placing a block just replaces it
+    passable:   { solid:false },                       // a block you can walk through
+    entityPass: { solid:true, passableFor:['animal', 'zombie'] },   // blocks you, creatures walk through
+    blocked:    { solid:true, passableFor:[] },        // blocks everything
+};
+ELEMENT_TYPES.block = (o, type) => {
+    const tool = o.tool ?? null;
+    const def = {
+        name: o.name ?? prettify(o.id), kind: o.kind ?? TEXTURE_KIND[o.textureType] ?? 'block', tool,
+        tag: o.tag ?? TOOL_TAG[tool] ?? 'stone', color: o.color ?? '#888888',
+        hardness: o.tier === -1 ? 10 : (o.hardness ?? 1), tier: Math.max(0, o.tier ?? 0),
+        drops: normDrops(o.drop, o.id),
+    };
+    if(o.textureType && !TEXTURE_KIND[o.textureType] && !o.kind) console.warn(`defineElement('${o.id}'): textureType '${o.textureType}' can't be drawn for a custom block yet; using a plain block (set kind).`);
+    Object.assign(def, BEHAVIOR[o.cellBehavior]);
+    if(o.emitLight) def.light = o.emitLight;
+    for(const k of ['accent', 'siege', 'solid', 'passableFor', 'replaceable', 'grow', 'init', 'placeState', 'safe', 'built', 'dropsFor', 'biome']) if(o[k] !== undefined) def[k] = o[k];
+    Blocks.define(o.id, def);
+    if(type === 'terrain' && o.biome && o.spawn) TERRAIN_SPAWNS.push({ id: o.id, biome: o.biome, chance: o.spawn });
+    if(o.item !== false){
+        Items.define(o.id, i => { const b = new BlockItem(i, o.id, 64); if(o.tags && o.tags.length) b.addTag(...o.tags); return b; },
+            lookOf({ color: o.color ?? def.color, icon: o.icon ?? 'block', accent: o.accent, shape: o.shape }));
+    }
+};
+ELEMENT_TYPES.terrain = ELEMENT_TYPES.block;
+
+/** Registers a crop that is already in the `crops` table: its produce + seed items, then its wild plant block. */
+function registerCropItems(id){
+    const c = Crops.get(id), L = cropLook(id);
+    Items.define(c.produce, i => c.edible
+        ? new Consumable(i, c.hunger, c.saturation, c.health).addTag('crop', 'food')
+        : new Material(i, 64, 1).addTag('crop'), { color:L.produce, icon: L.shape === 'berries' ? 'berries' : 'produce', shape:L.shape, accent:L.plant });
+    if(c.seed === `${id}_seeds`) Items.define(c.seed, i => new CropSeedItem(i, id), { color:L.produce, icon:'seeds', accent:L.plant });
+}
+function registerCropBlock(id){
+    if(id === 'berries') return;
+    const c = Crops.get(id);
+    Blocks.define(`wild_${id}`, {
+        name:`Wild ${prettify(id)}`, kind:'plant', crop:id, tag:'plant', color:cropLook(id).plant, hardness:0.2, tool:'hoe', passableFor:['zombie'],
+        drops: Items.has(c.seed) ? [[c.seed, 1]] : [],
+        init(b){ if(!b.plant) b.plant = newPlant(id, c.ripeAge + Math.random() * 0.3 * (Math.min(c.rotAge, c.ripeAge * 2) - c.ripeAge)); },
+    });
+}
+ELEMENT_TYPES.crop = o => {
+    const entry = {
+        hunger: o.hunger, satruation: o.satruation ?? o.saturation, health: o.instantHealth, edible: o.edible, tier: o.tier, regrow: o.regrow,
+        seeds: o.seeds, seed: o.seed, farm: o.require === 'none' ? false : undefined, nearWater: o.require === 'water' ? true : o.nearWater,
+        water: o.thirst, rarity: o.rarity, biomes: o.biomes, growth: o.growth, produce: o.crop,
+    };
+    for(const k of Object.keys(entry)) if(entry[k] === undefined) delete entry[k];
+    crops[o.id] = entry;
+    Crops._cache.delete(o.id);
+    if(o.color) CROP_LOOKS[o.id] = { produce:o.color, plant:o.accent ?? '#5fae3f', form:o.form ?? 'leafy', shape:o.shape ?? 'round' };
+    registerCropItems(o.id);
+    registerCropBlock(o.id);
+};
+
+ELEMENT_TYPES.creature = o => {
+    const { type, health, hp, drops, recipe, tags, ...rest } = o;
+    CREATURES[o.id] = Object.assign({ name: prettify(o.id) }, rest, { hp: hp ?? health ?? 10, drops: (drops ?? []).map(d => Array.isArray(d) ? d : Object.assign({}, d)) });
+};
+
+ELEMENT_TYPES.workbench = (o, type) => {
+    const station = o.workbenchTag || o.id, name = o.name ?? prettify(o.id), slots = o.slots, m = o.machine ?? {};
+    Items.define(o.id, i => { const it = new BlockItem(i, o.id, 16); if(o.tags && o.tags.length) it.addTag(...o.tags); return it; }, lookOf({ color: o.color, icon: o.icon ?? o.id, accent: o.accent }));
+    const def = Object.assign({
+        name, kind:'station', station, tag: o.tag ?? 'wood', color: o.color ?? '#9b6b3d',
+        hardness: o.hardness ?? 0.6, tool: o.tool ?? 'axe', passableFor: o.passableFor ?? ['zombie'],
+    }, o.block);
+    STATION_TITLES[station] = o.title ?? name;
+    if(o.draw) STATION_DRAW[station] = o.draw;
+    if(slots && typeof slots === 'object'){   // a machine
+        const cfg = { input: slots.input ?? 4, fuel: slots.fuel ?? 1, output: slots.output ?? 2, fuelSeconds: m.fuelSeconds ?? 12 };
+        const noFuel = m.noFuel ?? slots.fuel == null;
+        MACHINES[station] = { cfg, cells: () => machineSet(station), verb: m.verb ?? 'Working', idle: m.idle ?? 'Idle: put items in the input slots',
+            fancyFirst: !!m.fancyFirst, noFuel, light: m.light ?? 0, hint: m.hint ?? 'item',
+            blurb: m.blurb ?? (noFuel ? 'Needs no fuel. Works on one recipe at a time.' : `Works on one recipe at a time. Fuel burns ${cfg.fuelSeconds}s per unit.`),
+            listTitle: m.listTitle ?? `What the ${name.toLowerCase()} makes` };
+        const accepts = m.accepts ?? acceptsFor(station);
+        def.init = b => { if(!b.input) Object.assign(b, machineState(cfg, accepts)); };
+    } else if(typeof slots === 'number'){   // a chest
+        def.init = b => { if(!b.box) b.box = new Box(slots); };
+    } else {                                // a recipe menu
+        CRAFT_STATIONS.push(station);
+        STATION_VERBS[station] = o.verb ?? 'Craft';
+        if(o.also) STATION_ALSO[station] = o.also;
+    }
+    Blocks.define(o.id, def);
+    if(o.recipes) addSpecRecipes(station, o.recipes);
+};
+ELEMENT_TYPES.container = ELEMENT_TYPES.workbench;
+
+ELEMENT_TYPES.skill = (o, type) => {
+    Skills.defs[o.id] = Object.assign({ name: prettify(o.id), max: 5, color: '#cccccc' }, o, { kind: type === 'upgrade' ? 'upgrade' : 'skill' });
+};
+ELEMENT_TYPES.upgrade = ELEMENT_TYPES.skill;
+
 // Wood (one set per naturalMaterials.logs entry)
 for(const t of logTypes){
     const L = logLook(t);
-    Items.define(`${t}_log`,     id => new Material(id, 64, 1).package(new Fuel(2)).addTag('log', 'fuel', 'wood'), { color:L.bark, icon:'log', accent:L.planks });
-    Items.define(`${t}_planks`,  id => new BlockItem(id, id).package(new Fuel(1)).addTag('planks', 'fuel', 'wood'), { color:L.planks, icon:'block' });
-    Items.define(`${t}_sapling`, id => new BlockItem(id, id, 32).addTag('sapling'), { color:L.leaves, icon:'sapling' });
+    Items.define(`${t}_log`,     id => new Material(id, 100, 1).package(new Fuel(2)).addTag('log', 'fuel', 'wood'), { color:L.bark, icon:'log', accent:L.planks });
+    Items.define(`${t}_planks`,  id => new BlockItem(id, id, 100).package(new Fuel(1)).addTag('planks', 'fuel', 'wood'), { color:L.planks, icon:'block' });
+    Items.define(`${t}_sapling`, id => new BlockItem(id, id, 100).addTag('sapling'), { color:L.leaves, icon:'sapling' });
 }
-Items.define('stick', id => new Material(id, 64, 0).addTag('stick'), { color:'#9a7146', icon:'stick' });
+Items.define('stick', id => new Material(id, 100, 0).addTag('stick'), { color:'#9a7146', icon:'stick' });
 
 // Nature blocks (every naturalMaterials.nature entry that isn't a floor)
 for(const [id, n] of Object.entries(naturalMaterials.nature)){
@@ -1249,13 +1723,13 @@ for(const [id, n] of Object.entries(naturalMaterials.nature)){
 // Ores and ingots (from materialList)
 for(const m of oreMaterials){
     if(DIRECT_ORE_DROPS.includes(m)) continue;
-    Items.define(`raw_${m}`, id => new sMaterial(id, m).addTag('raw_ore'), { color:MATERIAL_COLORS[m], icon:'raw' });
+    Items.define(`raw_${m}`, id => new sMaterial(id, m, 100).addTag('raw_ore'), { color:MATERIAL_COLORS[m], icon:'raw' });
 }
-Items.define('coal',   id => new sMaterial(id, 'coal').package(new Fuel(4)).addTag('fuel'), { color:MATERIAL_COLORS.coal, icon:'chunk' });
-Items.define('sulfer', id => new sMaterial(id, 'sulfer'), { color:MATERIAL_COLORS.sulfer, icon:'chunk' });
+Items.define('coal',   id => new sMaterial(id, 'coal', 100).package(new Fuel(4)).addTag('fuel'), { color:MATERIAL_COLORS.coal, icon:'chunk' });
+Items.define('sulfer', id => new sMaterial(id, 'sulfer', 100), { color:MATERIAL_COLORS.sulfer, icon:'chunk' });
 for(const m of Object.keys(materialList)){
     if(DIRECT_ORE_DROPS.includes(m)) continue;
-    Items.define(`${m}_ingot`, id => new sMaterial(id, m).addTag('ingot'), { color:MATERIAL_COLORS[m], icon:'ingot' });
+    Items.define(`${m}_ingot`, id => new sMaterial(id, m, 100).addTag('ingot'), { color:MATERIAL_COLORS[m], icon:'ingot' });
 }
 
 // Tools (Pickaxe / Axe / Shovel / Hoe are the engine's item.js classes).
@@ -1278,21 +1752,16 @@ for(const m of materialsFor('tool')){
 
 
 // Crops: produce (food, or a material when edible:false) + seeds, from the `crops` table
-for(const id of Crops.ids()){
-    const c = Crops.get(id), L = cropLook(id);
-    Items.define(id, i => c.edible
-        ? new Consumable(i, c.hunger, c.saturation, c.health).addTag('crop', 'food')
-        : new Material(i, 64, 1).addTag('crop'), { color:L.produce, icon: L.shape === 'berries' ? 'berries' : 'produce', shape:L.shape, accent:L.plant });
-    if(c.seed === `${id}_seeds`) Items.define(c.seed, i => new CropSeedItem(i, id), { color:L.produce, icon:'seeds', accent:L.plant });
-}
-Items.define('berry_bush',  id => new BlockItem(id, 'berry_bush', 16), { color:'#3c7a34', icon:'bush' });
-Items.define('plant_fiber', id => new Material(id, 64, 0).addTag('fiber'), { color:'#8fb35a', icon:'fiber' });
-
-// Fibers and fabric (the loom refines them): plant fiber -> thread, hemp -> cloth -> silk
-Items.define('flint',  id => new Material(id, 64, 1).addTag('flint'), { color:'#4a4a55', icon:'chunk' });
-Items.define('thread', id => new Material(id, 64, 1).addTag('thread'), { color:'#e8dfc4', icon:'thread' });
-Items.define('cloth',  id => new Material(id, 64, 2).addTag('fabric'), { color:'#cdb88e', icon:'cloth' });
-Items.define('silk',   id => new Material(id, 64, 4).addTag('fabric'), { color:'#f1eafc', icon:'cloth', accent:'#c9b8ff' });
+for(const id of Crops.ids()) registerCropItems(id);
+Items.define('berry_bush',  id => new BlockItem(id, 'berry_bush', 24), { color:'#3c7a34', icon:'bush' });
+defineElements([
+    { id:'plant_fiber', type:'item', tier:0, tags:['fiber'],  color:'#8fb35a', icon:'fiber' },
+    // Fibers and fabric (the loom refines them): plant fiber -> thread, hemp -> cloth -> silk
+    { id:'flint',  type:'item', tier:1, tags:['flint'],  color:'#4a4a55', icon:'chunk' },
+    { id:'thread', type:'item', tier:1, tags:['thread'], color:'#e8dfc4', icon:'thread' },
+    { id:'cloth',  type:'item', tier:2, tags:['fabric'], color:'#cdb88e', icon:'cloth' },
+    { id:'silk',   type:'item', tier:4, tags:['fabric'], color:'#f1eafc', icon:'cloth', accent:'#c9b8ff' },
+]);
 
 /**
  * Gear tiers. Like metal pickaxes, gear made from a material is that
@@ -1337,40 +1806,47 @@ const MEATS = {
     pork:         { raw:[4, 1], cooked:[20, 8],  poison:0.5,  grease:1,    color:'#e39a9a' },
     chicken:      { raw:[3, 1], cooked:[14, 6],  poison:0.7,  grease:0.5,  color:'#f0c0b0' },
     bird_meat:    { raw:[2, 0], cooked:[9, 4],   poison:0.4,  grease:0.3,  color:'#c86a5a' },
+    bacon:        { raw:[3, 1], cooked:[17, 8],  poison:0.3,  grease:1,    color:'#d9786e' },   // dried from pork on the drying rack
     rotten_flesh: { raw:[4, 0], cooked:null,     poison:1,                 color:'#6f7f4a' },
 };
 const rawMeatId    = k => k === 'rotten_flesh' ? k : `raw_${k}`;
 const cookedMeatId = k => `cooked_${k}`;
+// Raw and cooked meat for every MEATS entry. Raw meat can poison you (the default poison: 1.5 damage/s for 12 s).
 for(const [k, m] of Object.entries(MEATS)){
-    Items.define(rawMeatId(k), id => new Consumable(id, m.raw[0], m.raw[1]).package(new Poisonous(m.poison)).addTag('food', 'meat', 'raw_meat'),
-        { color:m.color, icon:'meat' });
-    if(m.cooked) Items.define(cookedMeatId(k), id => new Consumable(id, m.cooked[0], m.cooked[1]).addTag('food', 'meat', 'cooked_meat'), { color:'#8a5232', icon:'meat', accent:m.color });
+    defineElement({ id: rawMeatId(k), type:'food', hunger: m.raw[0], satruation: m.raw[1], poison:{ chance: m.poison }, tags:['meat', 'raw_meat'], color: m.color, icon:'meat' });
+    if(m.cooked) defineElement({ id: cookedMeatId(k), type:'food', hunger: m.cooked[0], satruation: m.cooked[1], tags:['meat', 'cooked_meat'], color:'#8a5232', icon:'meat', accent: m.color });
 }
 
-// Grease: left over from cooking meat. Makes better torches / lamps and better food.
-Items.define('grease', id => new Material(id, 64, 1).addTag('grease'), { color:'#e8d38a', icon:'grease' });
+defineElements([
+    // Grease: left over from cooking meat. Makes better torches / lamps and better food.
+    { id:'grease', type:'item', tier:1, tags:['grease'], color:'#e8d38a', icon:'grease' },
 
-// Food made in the cooking pot
-Items.define('bread',          id => new Consumable(id, 22, 8).addTag('food'),  { color:'#c98a45', icon:'food' });
-Items.define('cooked_rice',    id => new Consumable(id, 18, 9).addTag('food'),  { color:'#f3efe2', icon:'food', accent:'#8a5a3a' });
-Items.define('baked_potato',   id => new Consumable(id, 16, 7).addTag('food'),  { color:'#b8844a', icon:'produce', shape:'round', accent:'#6b4a2a' });
-Items.define('vegetable_stew', id => new Consumable(id, 34, 14, 4).addTag('food'), { color:'#c9742e', icon:'food', accent:'#6b4a2a' });
-// Better food (cooked with grease): heals right away and / or regenerates health for a while.
-//   new Consumable(id, hunger, saturation, health) + Regeneration(health per second, seconds)
-const FINE_FOODS = {
-    fried_potatoes: { food:[24, 10, 8],  regen:null,     color:'#e0b050', accent:'#8a5a2a', icon:'produce', shape:'round' },
-    garlic_bread:   { food:[30, 12, 6],  regen:[0.5, 20], color:'#d9a050', accent:'#f3efe2', icon:'food' },
-    fried_rice:     { food:[28, 14, 4],  regen:[0.6, 25], color:'#f0d890', accent:'#c07a3a', icon:'food' },
-    meat_pie:       { food:[36, 16, 10], regen:[0.8, 20], color:'#b87838', accent:'#8a3a2a', icon:'food' },
-    hearty_stew:    { food:[44, 20, 6],  regen:[1.2, 30], color:'#a84a2a', accent:'#6b4a2a', icon:'food' },
-};
-for(const [id, f] of Object.entries(FINE_FOODS)){
-    Items.define(id, i => {
-        const it = new Consumable(i, ...f.food).addTag('food', 'fine_food');
-        if(f.regen) it.package(new Regeneration(...f.regen));
-        return it;
-    }, { color:f.color, accent:f.accent, icon:f.icon, shape:f.shape });
-}
+    // Leather and rubber. Animals drop raw (wet) leather, the drying rack dries it into leather,
+    // and the loom works leather + grease into rubber (boats need it).
+    { id:'raw_leather', type:'item', tier:0, tags:['hide'],    color:'#8a6a4a', icon:'hide', accent:'#5a4a8a' },
+    { id:'leather',     type:'item', tier:1, tags:['leather'], color:'#b07a45', icon:'hide' },
+    { id:'rubber',      type:'item', tier:1, tags:['rubber'],  color:'#3f3f46', icon:'rubber' },
+
+    // Dried meat (drying rack): each is food, no poison risk.
+    //   jerky = pork + beef dried together,  venison / bear / beef alone give their own kind
+    { id:'jerky',         type:'food', hunger:26, satruation:10, tags:['meat', 'dried_meat'], color:'#7a4632', icon:'meat', accent:'#e8d8c0' },
+    { id:'dried_beef',    type:'food', hunger:22, satruation:9,  tags:['meat', 'dried_meat'], color:'#8a4a3a', icon:'meat', accent:'#e8d8c0' },
+    { id:'venison_jerky', type:'food', hunger:22, satruation:9,  tags:['meat', 'dried_meat'], color:'#7a3a32', icon:'meat', accent:'#e8d8c0' },
+    { id:'bear_jerky',    type:'food', hunger:28, satruation:11, tags:['meat', 'dried_meat'], color:'#6a3028', icon:'meat', accent:'#e8d8c0' },
+
+    // Food made in the cooking pot
+    { id:'bread',          type:'food', hunger:22, satruation:8,  color:'#c98a45', icon:'food' },
+    { id:'cooked_rice',    type:'food', hunger:18, satruation:9,  color:'#f3efe2', icon:'food', accent:'#8a5a3a' },
+    { id:'baked_potato',   type:'food', hunger:16, satruation:7,  color:'#b8844a', icon:'produce', shape:'round', accent:'#6b4a2a' },
+    { id:'vegetable_stew', type:'food', hunger:34, satruation:14, instantHealth:4, color:'#c9742e', icon:'food', accent:'#6b4a2a' },
+
+    // Better food (cooked with grease): heals right away and / or regenerates health for a while.
+    { id:'fried_potatoes', type:'food', hunger:24, satruation:10, instantHealth:8,  tags:['fine_food'],                  color:'#e0b050', accent:'#8a5a2a', icon:'produce', shape:'round' },
+    { id:'garlic_bread',   type:'food', hunger:30, satruation:12, instantHealth:6,  tags:['fine_food'], regen:[0.5, 20], color:'#d9a050', accent:'#f3efe2', icon:'food' },
+    { id:'fried_rice',     type:'food', hunger:28, satruation:14, instantHealth:4,  tags:['fine_food'], regen:[0.6, 25], color:'#f0d890', accent:'#c07a3a', icon:'food' },
+    { id:'meat_pie',       type:'food', hunger:36, satruation:16, instantHealth:10, tags:['fine_food'], regen:[0.8, 20], color:'#b87838', accent:'#8a3a2a', icon:'food' },
+    { id:'hearty_stew',    type:'food', hunger:44, satruation:20, instantHealth:6,  tags:['fine_food'], regen:[1.2, 30], color:'#a84a2a', accent:'#6b4a2a', icon:'food' },
+]);
 
 // Melee weapons: one cell of reach (you must stand next to the target, like mining).
 Items.define('wooden_sword', id => new Sword(id, 7, 4, 1, 0, 80).addTag('melee'), { color:'#b98d55', icon:'sword' });
@@ -1381,7 +1857,7 @@ for(const m of WEAPON_METALS){
 // Ranged weapons: shoot arrows from a distance (range in cells).
 Items.define('bow',      id => new Bow(id, 1, 25, 'arrow', 0, 800, 'arrow', 150, 20).package(new Launcher(5, 1.0, 1.0)), { color:'#9a6b3a', icon:'bow' });
 Items.define('crossbow', id => new Bow(id, 1, 25, 'arrow', 0, 800, 'arrow', 260, 30).package(new Launcher(7, 1.6, 1.6)).addTag('crossbow'), { color:'#7a5a3a', icon:'crossbow' });
-Items.define('flint_arrow', id => new Ammo(id, 'arrow', 5, 0, 64).addTag('arrow'), { color:'#4a4a55', icon:'arrow' });
+Items.define('flint_arrow', id => new Ammo(id, 'arrow', 5, 0, 100).addTag('arrow'), { color:'#4a4a55', icon:'arrow' });
 for(const m of WEAPON_METALS){
     Items.define(`${m}_arrow`, id => new Ammo(id, 'arrow', 5 + 2 * gearTier(m), 0, 64).addTag('arrow'), { color:MATERIAL_COLORS[m], icon:'arrow' });
 }
@@ -1416,22 +1892,9 @@ for(const m of ARMOR_METALS){
 }
 
 // Water
-Items.define('canteen', id => new Canteen(id, 4), { color:'#7a8f9a', icon:'canteen' });
-Items.define('bucket',  id => new Bucket(id, 8),  { color:'#9b6b3d', icon:'bucket' });
+Items.define('canteen', id => new Canteen(id, 3), { color:'#7a8f9a', icon:'canteen' });
+Items.define('bucket',  id => new Bucket(id, 10),  { color:'#9b6b3d', icon:'bucket' });
 
-// Stations + base building
-Items.define('workbench',   id => new BlockItem(id, id, 8),  { color:'#9b6b3d', icon:'workbench' });
-Items.define('forge',       id => new BlockItem(id, id, 8),  { color:'#8a6656', icon:'furnace' });
-Items.define('loom',        id => new BlockItem(id, id, 8),  { color:'#a8834f', icon:'loom' });
-Items.define('cooking_pot', id => new BlockItem(id, id, 8),  { color:'#5a5f66', icon:'pot' });
-Items.define('chest',       id => new BlockItem(id, id, 16), { color:'#a0703a', icon:'chest' });
-Items.define('wooden_wall', id => new BlockItem(id, id, 64).addTag('wall'), { color:'#a77b4a', icon:'wall' });
-Items.define('stone_wall',  id => new BlockItem(id, id, 64).addTag('wall'), { color:'#8d8d8d', icon:'wall' });
-Items.define('wooden_door', id => new BlockItem(id, id, 16).addTag('door'), { color:'#93683c', icon:'door' });
-Items.define('glass',       id => new BlockItem(id, id, 64), { color:'#bfe3ea', icon:'glass' });
-Items.define('torch',       id => new BlockItem(id, id, 32).addTag('torch', 'light'), { color:'#ffb347', icon:'torch' });
-Items.define('grease_torch', id => new BlockItem(id, id, 32).addTag('torch', 'light'), { color:'#ffd27a', icon:'torch', accent:'#e8d38a' });
-Items.define('oil_lamp',    id => new BlockItem(id, id, 16).addTag('lamp', 'light'), { color:'#b0745a', icon:'lamp' });
 
 
 /* ---------------------------------------------------------------------
@@ -1461,17 +1924,6 @@ Items.define('oil_lamp',    id => new BlockItem(id, id, 16).addTag('lamp', 'ligh
  *     color, accent, ...  for drawing
  *   })
  * --------------------------------------------------------------------- */
-const Blocks = {
-    defs: {},
-    define(id, def){
-        this.defs[id] = Object.assign({
-            id, name: prettify(id), kind:'block', tag:'stone', solid:true,
-            hardness:1, tier:0, tool:null, drops:[[id, 1]], color:'#888888',
-        }, def);
-        return this.defs[id];
-    },
-    get(id){ return this.defs[id] ?? null; },
-};
 
 // naturalMaterials.nature: every entry that isn't a floor is a block (solid, except WALKABLE_SOIL)
 const WALKABLE_SOIL = ['sand'];   // you walk over these but can still dig them up
@@ -1484,7 +1936,7 @@ for(const [id, n] of Object.entries(naturalMaterials.nature)){
         color: NATURE_COLORS[id] ?? '#888888',
         hardness: n.hardness ?? 1, tier: n.tier ?? 0, tool,
         solid: !WALKABLE_SOIL.includes(id),
-        drops: id === 'gravel' ? [['flint', 1, 1, 0.5, 'gravel']] : [[id, 1]],   // gravel: 50% flint, otherwise the gravel itself
+        drops: id === 'gravel' ? [{ id:'gravel', linked:true, priority:0 }, { id:'flint', chance:0.5, linked:true, priority:1 }] : [[id, 1]],   // gravel: 50% flint, otherwise the gravel itself
     });
 }
 // Sand dunes: piled-up sand ridges in the desert. Unlike loose sand you can't walk over them.
@@ -1538,15 +1990,7 @@ Blocks.define('berry_bush', {
     placeState: () => ({ plant: newPlant('berries', 0) }),
 });
 // A wild plant for every other crop (rare, see FARM.wildChance)
-for(const id of Crops.ids()){
-    if(id === 'berries') continue;
-    const c = Crops.get(id);
-    Blocks.define(`wild_${id}`, {
-        name:`Wild ${prettify(id)}`, kind:'plant', crop:id, tag:'plant', color:cropLook(id).plant, hardness:0.2, tool:'hoe', passableFor:['zombie'],
-        drops: Items.has(c.seed) ? [[c.seed, 1]] : [],
-        init(b){ if(!b.plant) b.plant = newPlant(id, c.ripeAge + Math.random() * 0.3 * (Math.min(c.rotAge, c.ripeAge * 2) - c.ripeAge)); },
-    });
-}
+for(const id of Crops.ids()) registerCropBlock(id);
 
 // Ferns: walk-through ground cover. Gather them for plant fibers (and sometimes a seed).
 Blocks.define('fern', {
@@ -1559,47 +2003,83 @@ Blocks.define('fern', {
 Blocks.define('farmland', {
     kind:'farmland', tag:'farmland', passableFor:['animal', 'zombie'], color:'#6b4a2e', hardness:0.3, tool:'hoe',
     drops: [],
-    dropsFor: b => b.plant ? [[Crops.get(b.plant.crop).seed, 1]] : [],
+    dropsFor: b => b.plant ? [[Crops.get(b.plant.crop).seed, b.plant.count || 1]] : [],
     init(b){ if(b.water == null) b.water = 0; if(b.plant === undefined) b.plant = null; },
 });
 
-// Stations / containers
-// Zombies shamble through workbenches / looms / cooking pots / chests (but not doors or the forge).
-Blocks.define('workbench', { kind:'station', station:'workbench', tag:'wood',  color:'#9b6b3d', hardness:0.6, tool:'axe', passableFor:['zombie'] });
-Blocks.define('loom',        { kind:'station', station:'loom', tag:'wood',  color:'#a8834f', hardness:0.6, tool:'axe', passableFor:['zombie'] });
-/** Input / fuel / output slots of a forge-like station (cfg = FORGE or POT). */
-const machineState = (cfg, accepts) => ({
-    input:  new Box(cfg.input,  accepts),
-    fuel:   new Box(cfg.fuel,   item => fuelValue(item) > 0),
-    output: new Box(cfg.output, () => false),
-    burn: 0, burnMax: 0, progress: 0, active: null, lit: false, status: 'Idle',
-});
-Blocks.define('cooking_pot', {
-    kind:'station', station:'pot', tag:'stone', color:'#5a5f66', hardness:0.8, tool:'pickaxe', passableFor:['zombie'],
-    init(b){ if(!b.input) Object.assign(b, machineState(POT, item => isCookable(item))); },
-});
-Blocks.define('forge', {
-    kind:'station', station:'forge', tag:'stone', color:'#8a6656', hardness:1, tool:'pickaxe',
-    init(b){ if(!b.input) Object.assign(b, machineState(FORGE, item => isSmeltable(item))); },
-});
-Blocks.define('chest', {
-    kind:'station', station:'chest', tag:'wood', color:'#a0703a', hardness:0.6, tool:'axe', passableFor:['zombie'],
-    init(b){ if(!b.box) b.box = new Box(CHEST_SLOTS); },
-});
+// Stations, containers, base building and the boat. Each spec makes the item, the block and the recipe that crafts it
+// (see defineElement). Zombies shamble through workbenches / looms / cooking pots / drying racks / chests (but not doors or the forge).
+defineElements([
+    // ----- stations -----
+    { id:'workbench', type:'workbench', icon:'workbench', color:'#9b6b3d', verb:'Craft', also:['hand'], recipe:{ at:'hand', input:{ '#planks':4 } } },
+    { id:'loom',      type:'workbench', icon:'loom',      color:'#a8834f', verb:'Weave', recipe:{ input:{ plant_fiber:5, oak_log:4, stone:2 } } },
+    {   // a cooking pot is a machine: slots + one recipe at a time + fuel
+        id:'cooking_pot', type:'workbench', workbenchTag:'pot', icon:'pot', color:'#5a5f66', tag:'stone', hardness:0.8, tool:'pickaxe',
+        slots:{ input:4, fuel:1, output:2 },
+        machine:{ fuelSeconds:12, verb:'Cooking', idle:'Idle: put food in the input slots (a canteen for water)', fancyFirst:true, hint:'food', light:70, accepts: isCookable,
+                  blurb:'Cooks one dish at a time. Meat can leave grease. Fuel burns 12s per unit.',
+                  listTitle:'What the cooking pot makes (a canteen in the input = water)' },
+        recipe:{ input:{ clay:3, stone:2, stick:2 } },
+    },
+    {
+        id:'forge', type:'workbench', icon:'furnace', color:'#8a6656', tag:'stone', hardness:1, tool:'pickaxe', passableFor:[],
+        slots:{ input:4, fuel:1, output:2 },
+        machine:{ fuelSeconds:12, verb:'Smelting', idle:'Idle: put ore, wood or sand in the input slots', hint:'ore', light:95, accepts: isSmeltable,
+                  blurb:'Smelts one recipe at a time. Fuel burns 12s per unit (coal 4, log 2, planks 1).' },
+        recipe:{ input:{ stone:6, clay:4 } },
+    },
+    {   // no fuel slot = needs no fuel
+        id:'drying_rack', type:'workbench', workbenchTag:'rack', icon:'rack', color:'#a8834f',
+        slots:{ input:4, output:2 },
+        machine:{ verb:'Drying', idle:'Idle: put raw leather or raw meat in the input slots', fancyFirst:true, hint:'raw', accepts: isDryable,
+                  blurb:'Needs no fuel. Dries one recipe at a time: pork + beef together make jerky, pork alone makes raw bacon.' },
+        draw(g, def, b, c){   // a wooden frame with strips of meat and hide hanging on it
+            g.stroke(shade(def.color, -0.5)); g.strokeWeight(3);
+            g.line(c.x - 14, c.y + 13, c.x - 14, c.y - 12); g.line(c.x + 14, c.y + 13, c.x + 14, c.y - 12); g.line(c.x - 16, c.y - 10, c.x + 16, c.y - 10);
+            g.line(c.x - 14, c.y + 13, c.x - 18, c.y + 14); g.line(c.x + 14, c.y + 13, c.x + 18, c.y + 14);
+            g.noStroke();
+            const full = !!b._full;
+            g.fill('#9a4a3a'); g.rect(c.x - 10, c.y - 8, 5, full ? 14 : 10, 2);
+            g.fill('#b07a45'); g.rect(c.x - 2, c.y - 8, 7, full ? 17 : 12, 2);
+            g.fill('#7a3a32'); g.rect(c.x + 8, c.y - 8, 4, full ? 12 : 9, 2);
+        },
+        recipe:{ input:{ '#planks':4, stick:4, plant_fiber:2 } },
+    },
+    { id:'chest', type:'container', icon:'chest', color:'#a0703a', slots: CHEST_SLOTS, recipe:{ input:{ '#planks':8 } } },
 
-// Base building
-Blocks.define('wooden_wall', { kind:'wall', tag:'wood',  siege:'wood',  color:'#a77b4a', hardness:0.8, tool:'axe' });
-Blocks.define('stone_wall',  { kind:'wall', tag:'stone', siege:'stone', color:'#8d8d8d', hardness:1.4, tier:1, tool:'pickaxe' });
-Blocks.define('wooden_door', { kind:'door', tag:'wood',  siege:'wood',  color:'#93683c', hardness:0.6, tool:'axe', passableFor:['player'] });
-Blocks.define('glass',       { kind:'glass', tag:'stone', siege:'glass', color:'#bfe3ea', hardness:0.3 });
-// Torch: lights the area around it and stops hostile creatures spawning nearby. You walk over it.
-Blocks.define('torch', { kind:'torch', tag:'wood', solid:false, color:'#ffb347', hardness:-1, light: TORCH.light, safe: TORCH.safe });
-// Better lights made with grease: a brighter torch, and an oil lamp (brightest, keeps monsters furthest away)
-Blocks.define('grease_torch', { kind:'torch', tag:'wood', solid:false, color:'#ffd27a', hardness:-1, light: TORCH.greaseLight, safe: TORCH.greaseSafe });
-Blocks.define('oil_lamp',     { kind:'lamp', tag:'stone', solid:false, color:'#b0745a', hardness:-1, light: TORCH.lampLight, safe: TORCH.lampSafe });
+    // ----- the boat: sits on a water cell. Step onto it from the shore and you're aboard: every water cell is walkable for you
+    //       and the boat sails along with you. Step onto land and you leave it where it is. Break it (axe, by hand) to get it back.
+    {
+        id:'boat', type:'block', kind:'boat', tool:'axe', hardness:0.5, cellBehavior:'passable', color:'#a77b4a', icon:'boat', accent:'#3f3f46', tags:['boat'],
+        recipe:{ input:{ '#planks':8, rubber:4 } },
+    },
 
-// Everything the player builds (natural regrowth keeps its distance)
-for(const d of Object.values(Blocks.defs)) if(['station', 'wall', 'door', 'glass', 'planks', 'torch', 'lamp', 'farmland'].includes(d.kind)) d.built = true;
+    // ----- base building -----
+    { id:'wooden_wall', type:'block', kind:'wall', tool:'axe', tag:'wood', siege:'wood', hardness:0.8, color:'#a77b4a', icon:'wall', tags:['wall'],
+      recipe:{ input:{ '#planks':3 }, count:2 } },
+    { id:'stone_wall', type:'block', kind:'wall', tool:'pickaxe', tier:1, tag:'stone', siege:'stone', hardness:1.4, color:'#8d8d8d', icon:'wall', tags:['wall'],
+      recipe:{ input:{ stone:3 }, count:2 } },
+    { id:'wooden_door', type:'block', kind:'door', tool:'axe', tag:'wood', siege:'wood', hardness:0.6, passableFor:['player'], color:'#93683c', icon:'door', tags:['door'],
+      recipe:{ input:{ '#planks':4, stick:2 } } },
+    { id:'glass', type:'block', kind:'glass', tag:'stone', siege:'glass', hardness:0.3, color:'#bfe3ea', icon:'glass', stack:16,
+      recipe:{ at:'forge', input:{ sand:1 }, time:8 } },
+
+    // ----- lights -----
+    // Torch: lights the area around it and stops hostile creatures spawning nearby. You walk over it.
+    { id:'torch', type:'block', kind:'torch', tag:'wood', hardness:-1, cellBehavior:'passable', emitLight: TORCH.light, safe: TORCH.safe,
+      color:'#ffb347', icon:'torch', tags:['torch', 'light'], stack:50,
+      recipe:[ { at:'hand', input:{ stick:1, coal:1 }, count:4 },
+               { at:'hand', input:{ stick:2, plant_fiber:2 }, count:2, recipeId:'hand:torch_fiber' } ] },   // before you have coal
+    // Better lights made with grease: a brighter torch, and an oil lamp (brightest, keeps monsters furthest away)
+    { id:'grease_torch', type:'block', kind:'torch', tag:'wood', hardness:-1, cellBehavior:'passable', emitLight: TORCH.greaseLight, safe: TORCH.greaseSafe,
+      color:'#ffd27a', icon:'torch', accent:'#e8d38a', tags:['torch', 'light'], stack:50,
+      recipe:{ at:'hand', input:{ stick:2, grease:1, plant_fiber:1 }, count:4 } },   // brighter, keeps monsters further away
+    { id:'oil_lamp', type:'block', kind:'lamp', tag:'stone', hardness:-1, cellBehavior:'passable', emitLight: TORCH.lampLight, safe: TORCH.lampSafe,
+      color:'#b0745a', icon:'lamp', tags:['lamp', 'light'],
+      recipe:{ input:{ clay:2, grease:2, thread:1 } } },   // the brightest light
+]);
+
+
 
 
 /* ---------------------------------------------------------------------
@@ -1672,15 +2152,12 @@ class Recipe {
         return true;
     }
 }
+Content.flush();   // recipes queued by defineStation / defineBlock / defineRecipes (made before this class existed)
 
 // Hand (inventory screen)
 for(const t of logTypes) Recipe.add('hand', `${t}_planks:4`, { [`${t}_log`]:1 });
 Recipe.add('hand', 'stick:4',   { '#planks':2 });
-Recipe.add('hand', 'workbench', { '#planks':4 });
 Recipe.add('hand', 'clay:2',    { dirt:1, gravel:1, '@water':1 });   // wet dirt + gravel = clay
-Recipe.add('hand', 'torch:4',   { stick:1, coal:1 });
-Recipe.add('hand', 'grease_torch:4', { stick:2, grease:1, plant_fiber:1 });   // brighter, keeps monsters further away
-Recipe.add('hand', 'torch:2',   { stick:2, plant_fiber:2 }, { id:'hand:torch_fiber' });   // before you have coal
 
 // Workbench. Tools and weapons need a binding for their tier (see bindingFor):
 // tier 1 (wood) = plant fiber, tier 2-3 = thread, tier 4+ = silk.
@@ -1707,21 +2184,14 @@ for(const m of ARMOR_METALS){
     const t = gearTier(m), lining = t <= 3 ? 'cloth' : 'silk';
     ARMOR_PIECES.forEach((p, k) => Recipe.add('workbench', ARMOR_SETS[m].pieces[k], { [ingotOf(m)]: p.cost, [lining]: Math.ceil(p.cost / 2) }));
 }
-Recipe.add('workbench', 'forge',          { stone:6, clay:4 });
-Recipe.add('workbench', 'loom',           { plant_fiber:5, oak_log:4, stone:2 });
-Recipe.add('workbench', 'cooking_pot',    { clay:3, stone:2, stick:2 });
-Recipe.add('workbench', 'oil_lamp',       { clay:2, grease:2, thread:1 });   // the brightest light
 Recipe.add('workbench', 'canteen',        { '#planks':3 });
 Recipe.add('workbench', 'bucket',         { '#planks':5, plant_fiber:3 });
-Recipe.add('workbench', 'chest',          { '#planks':8 });
-Recipe.add('workbench', 'wooden_wall:2',  { '#planks':3 });
-Recipe.add('workbench', 'stone_wall:2',   { stone:3 });
-Recipe.add('workbench', 'wooden_door',    { '#planks':4, stick:2 });
 
 // Loom: refine fibers and fabric, and sew fabric armor.
 Recipe.add('loom', 'thread',  { plant_fiber:3 });
 Recipe.add('loom', 'cloth',   { hemp:3 });
 Recipe.add('loom', 'silk',    { cloth:2, thread:2 });
+Recipe.add('loom', 'rubber:2', { leather:2, grease:1 });   // boats are sealed with it
 for(const fab of ['cloth', 'silk']){
     ARMOR_PIECES.forEach((p, k) => Recipe.add('loom', ARMOR_SETS[fab].pieces[k], { [fab]: p.cost, thread: 1 }));
 }
@@ -1755,6 +2225,21 @@ function isCookable(item){
     return recipes.some(r => Object.keys(r.inputs).some(k => Recipe.matches(item, k)));
 }
 
+// Drying rack (works like the cooking pot but burns nothing: see RACK). It picks the recipe
+// that uses the most kinds of ingredients first, so pork + beef make jerky while pork alone
+// makes raw bacon (cook it in the pot).
+Recipe.add('rack', 'leather',       { raw_leather:1 },                  { time: 20 });
+Recipe.add('rack', 'jerky',         { raw_pork:1, raw_beef:1 },         { time: 30 });
+Recipe.add('rack', 'raw_bacon',     { raw_pork:1 },                     { time: 24 });
+Recipe.add('rack', 'dried_beef',    { raw_beef:1 },                     { time: 24 });
+Recipe.add('rack', 'venison_jerky', { raw_venison:1 },                  { time: 24 });
+Recipe.add('rack', 'bear_jerky',    { raw_bear_meat:1 },                { time: 28 });
+/** Can this item go into a drying rack input slot (raw leather, raw meat that has a dried form)? */
+function isDryable(item){
+    if(!item) return false;
+    return Recipe.for('rack').some(r => Object.keys(r.inputs).some(k => Recipe.matches(item, k)));
+}
+
 // Forge. It runs ONE recipe at a time, picked from what's in its input slots.
 // Smelt every raw ore, forge every materialList recipe (alloys)...
 for(const m of oreMaterials){
@@ -1773,7 +2258,6 @@ Recipe.add('forge', 'coal', { '#planks':3 },     { time: 8, id:'forge:coal_from_
 Recipe.add('forge', 'coal', { plant_fiber:4 },   { time: 6, id:'forge:coal_from_fiber' });
 Recipe.add('forge', 'coal', { '#sapling':2 },    { time: 6, id:'forge:coal_from_saplings' });
 // ...and fire sand.
-Recipe.add('forge', 'glass',       { sand:1 },  { time: 8 });
 
 /** Can this item go into a forge input slot (is it used by any forge recipe)? */
 function isSmeltable(item){
@@ -1866,7 +2350,7 @@ class SurvivalInventory extends Inventory {
         return room;
     }
     /** Adds an item stack. Returns how many did NOT fit (0 = all of it). */
-    give(item){
+    give(item, hotbarFirst = false){
         if(!(item instanceof Item) || item.count <= 0) return 0;
         if(item.getMaxStack() > 1){
             for(const s of [...this.hotbarSlotList, ...this.backpackSlots]){
@@ -1876,7 +2360,7 @@ class SurvivalInventory extends Inventory {
             }
         }
         if(item.count > 0){
-            const s = this._firstEmpty();
+            const s = (hotbarFirst ? this.hotbarSlotList.find(i => this[i] == null) : null) ?? this._firstEmpty();   // hotbarFirst: gear goes on the hotbar
             if(s != null){
                 this[s] = item;
                 this._changed({ event:'add', slot:s, item });
@@ -2022,6 +2506,7 @@ function moveOrSwapRef(a, b){
     else { a.box.setSlot(a.i, B ?? null); b.box.setSlot(b.i, A); }
     a.box.changed({ event:'swap' });
     if(b.box !== a.box) b.box.changed({ event:'swap' });
+    Tutorial.flags.moved = true;
     return true;
 }
 /** Right-click: half a stack into the first empty slot of the same container. */
@@ -2062,6 +2547,8 @@ const Theaya = {
     refilling: new Map(),// cell index -> scene time the water comes back
     forges: new Set(),
     pots: new Set(),     // cooking pot cells (ticked like forges)
+    racks: new Set(),    // drying rack cells (ticked like forges, no fuel)
+    machines: {},        // station kind -> Set of cell indexes (see machineSet; forges / pots / racks are the same sets)
     plants: new Set(),   // cells with a plant or farmland (ticked by tickPlants)
     trees: new Set(),
     lights: new Set(),   // cells with a block that glows (torches, ore hearts)
@@ -2078,6 +2565,8 @@ const Theaya = {
     spawn: { x:0, y:0 },
 };
 
+Theaya.machines.forge = Theaya.forges; Theaya.machines.pot = Theaya.pots; Theaya.machines.rack = Theaya.racks;   // the older names stay as aliases
+
 const cellIndex = (x, y) => y * MAP_COLS + x;
 const cellXY    = i => ({ x: i % MAP_COLS, y: Math.floor(i / MAP_COLS) });
 function sceneTime(){ return Scene.time(SCENE_ID); }
@@ -2091,9 +2580,17 @@ function blocksMover(def, mover = 'player'){
 /** Walkable floor (grass) with nothing in the way of `mover`. */
 function isPassable(x, y, mover = 'player'){
     const g = groundAt(x, y);
-    if(!g || !g.passable) return false;
+    if(!g) return false;
+    if(!g.passable){
+        // water: only the player, and only on a boat (aboard: all water; ashore: just the cell the boat floats in)
+        if(!(g.water && mover === 'player')) return false;
+        const b = blockAt(x, y);
+        if(!Boat.aboard && !(b && b.id === 'boat')) return false;
+    }
     return !blocksMover(blockDefAt(x, y), mover);
 }
+/** Boating state: `aboard` = the player is in a boat (every water cell is walkable), `cell` = the cell index the boat floats in. */
+const Boat = { aboard: false, cell: -1 };
 /** Mirror the player's passability into the tileMatrix's reserved flag (pathing + walking read it). */
 function syncCell(x, y){
     Theaya.zone.setReserved(x, y, !isPassable(x, y, 'player'));
@@ -2104,8 +2601,7 @@ function setBlock(x, y, id, state = {}){
     const i = cellIndex(x, y);
     Theaya.growing.delete(i);
     Theaya.trees.delete(i);
-    Theaya.forges.delete(i);
-    Theaya.pots.delete(i);
+    for(const set of Object.values(Theaya.machines)) set.delete(i);
     Theaya.plants.delete(i);
     Theaya.lights.delete(i);
     Theaya.hearts.delete(i);
@@ -2121,8 +2617,7 @@ function setBlock(x, y, id, state = {}){
         if(!def.replaceable){ Theaya.puddles.delete(i); Theaya.snow.delete(i); }
         if(def.grow) Theaya.growing.set(i, sceneTime() + def.grow.seconds * (0.8 + 0.4 * Math.random()));
         if(def.kind === 'tree') Theaya.trees.add(i);
-        if(def.station === 'forge') Theaya.forges.add(i);
-        if(def.station === 'pot') Theaya.pots.add(i);
+        if(MACHINES[def.station]) machineSet(def.station).add(i);
         if(b.plant || def.kind === 'farmland') Theaya.plants.add(i);
         if(def.light) Theaya.lights.add(i);
         if(def.kind === 'ore_heart') Theaya.hearts.add(i);
@@ -2346,6 +2841,14 @@ function generateWorld(seed = WORLD_SEED){
         }
     }
 
+    // Custom terrain (defineElement type:'terrain' with biome + spawn): scattered over its biome's free land.
+    for(const t of TERRAIN_SPAWNS){
+        for(const i of land) if(!T.blocks[i] && T.ground[i] === FLOOR && dist[i] > 3 && (t.biome === 'all' || T.biome[i] === t.biome) && rng() < t.chance){
+            const { x, y } = cellXY(i);
+            setBlock(x, y, t.id);
+        }
+    }
+
     // Make sure every ore exists somewhere it's allowed.
     for(const m of oreMaterials){
         const id = `${m}_ore`;
@@ -2393,7 +2896,7 @@ function generateWorld(seed = WORLD_SEED){
  * 8. Player + survival
  * --------------------------------------------------------------------- */
 const theayaScene = new Scene(SCENE_ID, '#1f4f80', { exe: (dt) => gameTick(dt) }, () => drawTerrain());
-generateWorld(WORLD_SEED);
+generateWorld(LAUNCH.seed);
 
 const _spawnPos = areaZones.home.toWorld(Theaya.spawn.x, Theaya.spawn.y);
 const player = new Player(_spawnPos.x, _spawnPos.y, 18, 18, 'survival_player', SCENE_ID);
@@ -2467,7 +2970,7 @@ function playerDefense(){
 }
 /** Damage from creatures / lightning. Armor soaks part of it and wears down. Returns damage taken. */
 function damagePlayer(amount, source = ''){
-    const def = playerDefense(), dmg = amount * ARMOR_SCALE / (ARMOR_SCALE + def);
+    const def = playerDefense(), dmg = amount * ARMOR_SCALE / (ARMOR_SCALE + def) * (1 - 0.05 * skillLevel('thick_skin'));
     player.health -= dmg;
     for(const s of ARMOR_SLOTS){
         const it = player.gear[s].getSlot(0);
@@ -2481,21 +2984,21 @@ function damagePlayer(amount, source = ''){
 }
 
 // Starting kit: a full canteen and a few berries on the hotbar.
-(() => {
-    const inv = player.inventory;
-    const canteen = Items.create('canteen');
-    canteen.water.value = canteen.water.capacity;
-    inv[inv.hotbarSlot(1)] = canteen;
-    inv[inv.hotbarSlot(2)] = Items.create('berries', 4);
-    inv._changed({ event:'kit' });
-})();
+// (() => {
+//     const inv = player.inventory;
+//     const canteen = Items.create('canteen');
+//     canteen.water.value = canteen.water.capacity;
+//     inv[inv.hotbarSlot(1)] = canteen;
+//     inv[inv.hotbarSlot(2)] = Items.create('berries', 4);
+//     inv._changed({ event:'kit' });
+// })();
 
 /** Add `count` of an item id, in max-size stacks. Returns how many didn't fit. */
-function giveItems(id, count = 1){
+function giveItems(id, count = 1, hotbarFirst = false){
     let left = count;
     while(left > 0){
         const n = Math.min(left, Items.maxStack(id));
-        const rest = player.inventory.give(Items.create(id, n));
+        const rest = player.inventory.give(Items.create(id, n), hotbarFirst);
         left -= (n - rest);
         if(rest > 0) break;
     }
@@ -2503,21 +3006,187 @@ function giveItems(id, count = 1){
 }
 function roomForItems(id){ return player.inventory.roomFor(Items.create(id, 1)); }
 
+/* ----- Experience + levels (see XP) ----- */
+const Levels = {
+    level: 1,
+    xp: 0,                                         // xp into the current level
+    need(level = this.level){ const n = level - 1; return Math.round(XP.levelBase + XP.levelStep * n + XP.levelCurve * n * n); },
+    get fraction(){ return this.xp / this.need(); },
+    pending: 0,                                    // level-ups whose skill / upgrade choice hasn't been made yet
+    flash: { text: '', until: 0 },                 // little "+N xp" / "Level up!" text on the HUD
+};
+/** Give the player experience (fractions are kept). Levels up as often as the xp allows. */
+function gainXp(amount, what = ''){
+    if(!(amount > 0)) return;
+    amount *= 1 + 0.1 * skillLevel('quick_learner');
+    Levels.xp += amount;
+    let ups = 0;
+    while(Levels.xp >= Levels.need()){ Levels.xp -= Levels.need(); Levels.level++; ups++; }
+    const shown = Math.round(amount * 10) / 10;
+    Levels.flash = { text: `+${shown} xp${what ? ' (' + what + ')' : ''}`, until: performance.now() + 1800 };
+    if(ups){
+        player.maxHealth += XP.healthPerLevel * ups;
+        player.health = Math.min(player.maxHealth, player.health + XP.healthPerLevel * ups);
+        Levels.pending += ups;   // every level gives a skill / upgrade choice (see openChoice)
+        notify(`Level up! You are level ${Levels.level} (+${XP.healthPerLevel * ups} max health)`, '#ffd75e');
+    }
+}
+
+/* ---------------------------------------------------------------------
+ * Skills + upgrades. Every level up offers 3 random picks (skills and stat upgrades) that
+ * aren't maxed yet. Picking one raises it a level (new ones start at level 1), so the same
+ * pick can come back and get stronger. K shows what you have.
+ *   Skills.defs[id] = { name, kind:'skill'|'upgrade', max, color, desc(level), info }
+ *   `desc(level)` says what the skill does AT that level (the card shows the next one).
+ * --------------------------------------------------------------------- */
+const pct = v => `${Math.round(v * 100)}%`;
+const Skills = {
+    levels: {},
+    defs: {},   // filled by the defineElements([...]) list after the helpers below
+    level(id){ return this.levels[id] || 0; },
+    maxed(id){ return this.level(id) >= this.defs[id].max; },
+    /** Raise a skill one level. */
+    take(id){
+        const d = this.defs[id];
+        if(!d || this.maxed(id)) return false;
+        this.levels[id] = this.level(id) + 1;
+        if(d.onPick) d.onPick(this.levels[id]);
+        return true;
+    },
+    /** Up to n random picks that aren't maxed. */
+    roll(n = 3){
+        const pool = Object.keys(this.defs).filter(id => !this.maxed(id));
+        for(let i = pool.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+        return pool.slice(0, n);
+    },
+};
+const skillLevel = id => Skills.level(id);
+// Hunter: sneaking (hold Shift) slows you down and makes creatures notice you later
+const sneakSpeed   = l => [1, 0.55, 0.65, 0.75][l] ?? 0.75;
+const stealthSight = l => [1, 0.7, 0.5, 0.3][l] ?? 0.3;
+
+// The skills and upgrades offered at every level up (desc(level) says what it does AT that level).
+defineElements([
+    // ----- skills -----
+    { id:'active_runner', type:'skill', name:'Active Runner', max:5, color:'#ffd75e',
+      desc: l => `Move ${pct(0.1 * l)} faster. Walking costs ${pct(0.2 * l)} less of its extra hunger.` },
+    { id:'steel_stomach', type:'skill', name:'Steel Stomach', max:5, color:'#9ad84a',
+      desc: l => `Poison lasts and hurts ${pct(0.12 * l)} less. Hunger drains ${pct(0.05 * l)} slower.` },
+    { id:'hunter', type:'skill', name:'Hunter', max:3, color:'#c98a45',
+      desc: l => `Hold Shift to sneak (${pct(1 - sneakSpeed(l))} slower). Creatures notice you from ${pct(1 - stealthSight(l))} less far away while sneaking.` },
+    { id:'green_thumb', type:'skill', name:'Green Thumb', max:5, color:'#5fc46a',
+      desc: l => `Crops drink ${pct(0.08 * l)} less water. ${pct(0.1 * l)} chance of a bonus harvest per plant.` },
+    { id:'prospector', type:'skill', name:'Prospector', max:5, color:'#9aa3b8',
+      desc: l => `Mining and chopping are ${pct(0.08 * l)} faster. ${pct(0.08 * l)} chance of an extra ore.` },
+    { id:'skinner', type:'skill', name:'Skinner', max:3, color:'#b07a45',
+      desc: l => `${pct(0.15 * l)} chance of one more of each drop from animals and monsters.` },
+    { id:'thick_skin', type:'skill', name:'Thick Skin', max:5, color:'#d9786e',
+      desc: l => `Take ${pct(0.05 * l)} less damage (on top of armor).` },
+    { id:'brawler', type:'skill', name:'Brawler', max:5, color:'#e05555',
+      desc: l => `Your weapons and arrows do ${pct(0.08 * l)} more damage.` },
+    { id:'regenerator', type:'skill', name:'Regenerator', max:5, color:'#ff9ac0',
+      desc: l => `Health regenerates ${pct(0.2 * l)} faster when well fed and watered.` },
+    { id:'weatherproof', type:'skill', name:'Weatherproof', max:3, color:'#7fc8e8',
+      desc: l => `Heat makes you thirsty and cold makes you hungry ${pct(0.25 * l)} less.` },
+    { id:'quick_learner', type:'skill', name:'Quick Learner', max:3, color:'#d8ff9a',
+      desc: l => `Gain ${pct(0.1 * l)} more experience.` },
+    // ----- stat upgrades -----
+    { id:'vitality', type:'upgrade', name:'Vitality', max:10, color:'#e05555',
+      desc: l => `+10 max health and a heal of 10 (${10 * l} in total from this).`, onPick(){ player.maxHealth += 10; player.health += 10; } },
+    { id:'hydration', type:'upgrade', name:'Well Hydrated', max:8, color:'#4aa3ff',
+      desc: l => `Thirst drains ${pct(0.06 * l)} slower.` },
+    { id:'big_appetite', type:'upgrade', name:'Big Appetite', max:8, color:'#e0a040',
+      desc: l => `Hunger drains ${pct(0.06 * l)} slower.` },
+]);
+function isSneaking(){ return skillLevel('hunter') > 0 && Keys.down('key@shift') && !GameUI.inventoryOpen && !GameUI.station; }
+/** Multiplier on how far creatures notice you (1 = normal). */
+const stealthMult = () => isSneaking() ? stealthSight(skillLevel('hunter')) : 1;
+const BASE_WALK_SPEED = 150;   // px / s (the tileMatrix's PathingAI speed)
+function playerSpeed(){
+    let s = BASE_WALK_SPEED * (1 + 0.1 * skillLevel('active_runner'));
+    if(isSneaking()) s *= sneakSpeed(skillLevel('hunter'));
+    return s;
+}
+const hungerSkillMult = () => Math.max(0.1, (1 - 0.05 * skillLevel('steel_stomach')) * (1 - 0.06 * skillLevel('big_appetite')));
+const thirstSkillMult = () => Math.max(0.1, 1 - 0.06 * skillLevel('hydration'));
+const poisonSkillMult = () => Math.max(0.1, 1 - 0.12 * skillLevel('steel_stomach'));
+/** Does a `0.x * level` chance roll succeed? */
+const skillChance = (id, perLevel) => Math.random() < perLevel * skillLevel(id);
+
+/** Open the next level-up choice (when some are waiting). The world waits while it's open. */
+function openChoice(){
+    if(GameUI.choice || Levels.pending <= 0) return;
+    const options = Skills.roll(3);
+    if(!options.length){ Levels.pending = 0; return; }   // everything is maxed
+    GameUI.choice = { options };
+    GameUI.wheel = null; GameUI.press = null; GameUI.picked = null;
+    theayaScene.pause = true;
+}
+function pickChoice(id){
+    if(!GameUI.choice || !GameUI.choice.options.includes(id)) return;
+    const d = Skills.defs[id];
+    Skills.take(id);
+    Levels.pending--;
+    GameUI.choice = null;
+    theayaScene.pause = GameUI.paused;
+    notify(`${d.name} ${Skills.level(id) === 1 && d.kind === 'skill' ? 'learned' : 'raised'}: level ${Skills.level(id)}`, d.color);
+    openChoice();   // another level waiting? offer the next pick
+}
+
+/**
+ * Boating. Step onto a placed boat (a 'boat' block on a water cell) to get in: every water cell
+ * becomes walkable for you (the tileMatrix's reserved flags follow) and the boat sails along with
+ * you, cell by cell. Step onto land and you're out; the boat stays on the last water cell.
+ */
+function setBoating(on, cell = -1){
+    Boat.cell = on ? cell : -1;
+    if(Boat.aboard === on) return;
+    Boat.aboard = on;
+    for(const i of Theaya.waterCells){
+        if(!isWaterCell(i)) continue;
+        const { x, y } = cellXY(i);
+        Theaya.zone.setReserved(x, y, !isPassable(x, y, 'player'));
+    }
+    notify(on ? 'You climb into the boat. Sail over the water; step onto land to get out.' : 'You step out of the boat.', '#8fd0ff');
+}
+const boatHasPlayer = i => Boat.aboard && Boat.cell === i;
+function tickBoat(){
+    const pc = playerCell();
+    if(!pc) return;
+    const i = cellIndex(pc.x, pc.y), b = Theaya.blocks[i];
+    if(!Boat.aboard){
+        if(b && b.id === 'boat') setBoating(true, i);
+        return;
+    }
+    if(i === Boat.cell) return;
+    if(isWaterCell(i)){
+        // sail: the boat moves into the new cell with you
+        if(!Theaya.blocks[i]){   // (another boat already floating there: just climb into that one)
+            const old = cellXY(Boat.cell), ob = Theaya.blocks[Boat.cell];
+            if(ob && ob.id === 'boat') setBlock(old.x, old.y, null);
+            setBlock(pc.x, pc.y, 'boat');
+        }
+        Boat.cell = i;
+    } else setBoating(false);   // onto land: the boat stays where it floats
+}
+
 /** How much faster hunger / thirst drain right now (heat, cold, drought). */
 function climateRates(){
     const pc = playerCell(), temp = pc ? temperatureAt(pc.x, pc.y) : 20;
     let thirst = 1, hunger = 1;
-    if(temp > SURVIVAL.hotAbove)  thirst *= 1 + SURVIVAL.hotThirst * (temp - SURVIVAL.hotAbove);
-    if(temp < SURVIVAL.coldBelow) hunger *= 1 + SURVIVAL.coldHunger * (SURVIVAL.coldBelow - temp);
+    const hardy = 1 - 0.25 * skillLevel('weatherproof');   // Weatherproof shrinks the heat / cold penalty
+    if(temp > SURVIVAL.hotAbove)  thirst *= 1 + SURVIVAL.hotThirst * (temp - SURVIVAL.hotAbove) * hardy;
+    if(temp < SURVIVAL.coldBelow) hunger *= 1 + SURVIVAL.coldHunger * (SURVIVAL.coldBelow - temp) * hardy;
     thirst *= Weather.param('thirst', 1);
     return { thirst, hunger, temp };
 }
 function tickSurvival(dt){
     const p = player, rates = climateRates();
-    const drain = SURVIVAL.hungerRate * rates.hunger * dt;
+    const walking = areaZones.home.isMoving(p) ? SURVIVAL.moveHunger * Math.max(0, 1 - 0.2 * skillLevel('active_runner')) : 0;
+    const drain = SURVIVAL.hungerRate * rates.hunger * (1 + walking) * hungerSkillMult() * dt;
     if(p.satruation > 0) p.satruation = Math.max(0, p.satruation - drain);
     else p.hunger = Math.max(0, p.hunger - drain);
-    p.thirst = Math.max(0, p.thirst - SURVIVAL.thirstRate * rates.thirst * dt);
+    p.thirst = Math.max(0, p.thirst - SURVIVAL.thirstRate * rates.thirst * thirstSkillMult() * dt);
     p._damageOnNutrition(dt);
     if(p.poison){
         p.health -= p.poison.dps * dt;
@@ -2525,7 +3194,7 @@ function tickSurvival(dt){
         if(p.poison.left <= 0){ p.poison = null; notify('The poison wore off.', '#a6f0a0'); }
     }
     const wellFed = !p.poison && p.nutritionDamageRate() === 0 && p.hunger >= SURVIVAL.regenAbove && p.thirst >= SURVIVAL.regenAbove;
-    if(wellFed && p.health < p.maxHealth) p.health = Math.min(p.maxHealth, p.health + SURVIVAL.regenRate * dt);
+    if(wellFed && p.health < p.maxHealth) p.health = Math.min(p.maxHealth, p.health + SURVIVAL.regenRate * (1 + 0.2 * skillLevel('regenerator')) * dt);
     // better food: fast regeneration for a while (works even while poisoned)
     if(p.regenBuff){
         p.health = Math.min(p.maxHealth, p.health + p.regenBuff.rate * dt);
@@ -2557,7 +3226,9 @@ const Act = {
 
 function playerCell(){ return areaZones.home.positionOf(player); }
 function heldItem(){ return player.inventory.hotbarItem(GameUI.hotbar); }
-const pathOpts = () => ({ passable: (x, y) => isPassable(x, y) });
+// align:false = a new walk heads straight for its next cell. (With the engine default the player first walks back to the
+// center of the cell it is in, so re-planning often, e.g. while fighting, made it jitter backwards.)
+const pathOpts = () => ({ passable: (x, y) => isPassable(x, y), speed: playerSpeed(), align: false });
 
 /** Best passable cell next to `cell` the player can walk to: { x, y, path } or null. */
 function findApproach(cell){
@@ -2634,15 +3305,38 @@ function miningInfo(def, item){
     }
     if(def.hardness < 0) return { ok:true, fits, time: 0.1 };
     const speed = fits ? m.speed * (1 + 0.25 * Math.max(0, m.tier - def.tier)) : HAND_SPEED;
-    return { ok:true, fits, time: Math.max(0.15, MINE_TIME_SCALE * def.hardness * (1 + 0.15 * def.tier) / speed) };
+    const prospect = ['stone', 'ore', 'tree', 'ore_heart'].includes(def.kind) ? 1 - 0.08 * skillLevel('prospector') : 1;
+    return { ok:true, fits, time: Math.max(0.15, MINE_TIME_SCALE * def.hardness * (1 + 0.15 * def.tier) / speed * prospect) };
 }
 const randInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
 function rollDrops(def, b = null){
-    const out = [];
-    const list = def.dropsFor && b ? def.dropsFor(b) : def.drops;
-    for(const [id, min, max = min, chance = 1, instead = null] of list){
-        if(chance < 1 && Math.random() >= chance){ if(instead) out.push([instead, 1]); continue; }
-        out.push([id, randInt(min, max)]);
+    return rollDropList(def.dropsFor && b ? def.dropsFor(b) : def.drops);
+}
+/**
+ * Rolls a drop list. A row is [id, min, max = min, chance = 1, insteadId] or an object
+ * { id, chance = 1, amount: [min, max] | n, linked, priority } (see defineElement). `linked` rows ( true, or a group name) can't drop together:
+ * of the ones whose chance hit, only the highest `priority` drops (gravel: itself at priority 0, flint at 50% priority 1).
+ */
+function rollDropList(list){
+    const out = [], groups = new Map();
+    for(const e of list){
+        if(Array.isArray(e)){
+            const [id, min, max = min, chance = 1, instead = null] = e;
+            if(chance < 1 && Math.random() >= chance){ if(instead) out.push([instead, 1]); continue; }
+            out.push([id, randInt(min, max)]);
+            continue;
+        }
+        const [min, max] = Array.isArray(e.amount) ? [e.amount[0], e.amount[1] ?? e.amount[0]] : [e.amount ?? 1, e.amount ?? 1];
+        const hit = (e.chance ?? 1) >= 1 || Math.random() < e.chance;
+        if(e.linked){
+            const g = e.linked === true ? '' : String(e.linked);
+            if(!groups.has(g)) groups.set(g, []);
+            groups.get(g).push({ e, hit, min, max });
+        } else if(hit) out.push([e.id, randInt(min, max)]);
+    }
+    for(const rows of groups.values()){
+        const hits = rows.filter(r => r.hit).sort((p, q) => (q.e.priority ?? 0) - (p.e.priority ?? 0));
+        if(hits.length) out.push([hits[0].e.id, randInt(hits[0].min, hits[0].max)]);
     }
     return out;
 }
@@ -2664,6 +3358,7 @@ function startMine(x, y){
     const info = miningInfo(def, tool);
     if(!info.ok){ notify(info.reason, '#ff8a7a'); return; }
     if(containerBusy(b)){ notify(`Empty the ${def.name} first.`, '#ff8a7a'); return; }
+    if(boatHasPlayer(cellIndex(x, y))){ notify("You're sitting in it.", '#ff8a7a'); return; }
     const id = b.id;
     startJob({ x, y, id, time: info.time, tool, verb: verbFor(def),
         check: () => { const c = blockAt(x, y); return !!(c && c.id === id); }, done: finishMine });
@@ -2680,11 +3375,16 @@ function tickJob(dt){
 function finishMine(j){
     const b = blockAt(j.x, j.y), def = Blocks.get(j.id);
     const drops = rollDrops(def, b);
+    if(def.kind === 'ore' && drops.length && drops[0][1] > 0 && skillChance('prospector', 0.08)) drops[0][1]++;   // Prospector: an extra ore
     if(!hasRoomFor(drops)){ notify('Inventory full!', '#ff8a7a'); return; }
     if(j.tool && miningInfo(def, j.tool).fits) wearTool(j.tool, def.tag);
     setBlock(j.x, j.y, null);
     for(const [id, n] of drops) if(n > 0) giveItems(id, n);
     if(drops.length) notify('+ ' + dropsText(drops), '#a6f0a0');
+    // mining xp: ore pays by its tier, stone and trees a little, other blocks nothing
+    if(def.kind === 'ore' || def.kind === 'ore_heart') gainXp(XP.ore + XP.oreTier * (def.tier || 0), 'mining');
+    else if(def.kind === 'stone') gainXp(XP.stone, 'mining');
+    else if(def.kind === 'tree') gainXp(XP.tree, 'chopping');
 }
 
 /* ----- Farming ----- */
@@ -2707,38 +3407,60 @@ function startTill(x, y){
 }
 function finishTill(j){
     const i = cellIndex(j.x, j.y);
-    const wet = (Theaya.puddles.get(i) || 0) * 15 + (Theaya.snow.has(i) ? 10 : 0) + (Theaya.mud.has(i) ? 10 : 0);
+    const wet = nextToWater(i) ? FARM.waterMax : (Theaya.puddles.get(i) || 0) * 15 + (Theaya.snow.has(i) ? 10 : 0) + (Theaya.mud.has(i) ? 10 : 0);
     wearTool(j.tool, 'grass');
     Theaya.puddles.delete(i); Theaya.mud.delete(i); Theaya.snow.delete(i);
     setBlock(j.x, j.y, 'farmland', { water: Math.min(FARM.waterMax, wet) });
-    notify('Tilled the soil. Water it with a bucket, then plant seeds.', '#c9e89a');
+    notify(nextToWater(i) ? 'Tilled the soil. The water next to it irrigates it: just plant seeds.' : 'Tilled the soil. Water it with a bucket, then plant seeds.', '#c9e89a');
+    gainXp(XP.till, 'farming');
 }
 
-/* Digging grass: bare grass gives dirt, as often as you like (the grass stays). */
-const isShovel = item => !!(item && item.get && item.get('mining') && item.get('mining').classes.includes('shovel') && !item.isBroken);
-/** Bare grass (no block on it). You can dig the cell you're standing on. */
-function canDigGrass(x, y){
+/* Digging bare floor: as often as you like, the floor stays. What you get depends on the biome:
+ * cave floor -> stone (pickaxe), desert floor -> sand, everything else -> dirt (shovel or bare hands). */
+const FLOOR_DIGS = {
+    cave:   { item:'stone', tool:'pickaxe', tag:'stone', byHand:false, scale:1,   what:'stone' },
+    desert: { item:'sand',  tool:'shovel',  tag:'sand',  byHand:true,  scale:0.6, what:'sand' },
+    other:  { item:'dirt',  tool:'shovel',  tag:'dirt',  byHand:true,  scale:0.6, what:'dirt' },
+};
+const hasToolClass = (item, cls) => !!(item && item.get && item.get('mining') && item.get('mining').classes.includes(cls) && !item.isBroken);
+const isShovel = item => hasToolClass(item, 'shovel');
+/** The dig rule for a cell's floor (or null when it isn't diggable floor). */
+function floorDigAt(x, y){
     const g = groundAt(x, y);
-    if(!g || !g.passable || Theaya.ground[cellIndex(x, y)] !== FLOOR) return { ok:false, reason:'Only grass gives dirt' };
+    if(!g || !g.passable || Theaya.ground[cellIndex(x, y)] !== FLOOR) return null;
+    const b = Theaya.biome[cellIndex(x, y)];
+    return FLOOR_DIGS[b] || FLOOR_DIGS.other;
+}
+/** Bare floor (no block on it). You can dig the cell you're standing on. */
+function canDigGrass(x, y, tool){
+    const r = floorDigAt(x, y);
+    if(!r) return { ok:false, reason:'Nothing to dig here' };
     if(blockAt(x, y)) return { ok:false, reason:'Something is in the way' };
+    if(!r.byHand && !hasToolClass(tool ?? heldItem(), r.tool)) return { ok:false, reason:`Needs a ${r.tool} to dig ${r.what}` };
     return { ok:true };
 }
-/** Like mining a dirt block: a shovel is faster, bare hands work too. */
-function digGrassTime(tool){
-    const m = isShovel(tool) ? tool.get('mining') : null;
-    return Math.max(0.3, MINE_TIME_SCALE * (Blocks.get('dirt').hardness ?? 1) * 0.6 / (m ? m.speed : HAND_SPEED));
+/** Like mining the matching block: the right tool is faster, bare hands work where allowed. */
+function digGrassTime(tool, x, y){
+    const r = (x === undefined ? FLOOR_DIGS.other : floorDigAt(x, y)) || FLOOR_DIGS.other;
+    const m = hasToolClass(tool, r.tool) ? tool.get('mining') : null;
+    return Math.max(0.3, MINE_TIME_SCALE * (Blocks.get(r.item)?.hardness ?? 1) * r.scale / (m ? m.speed : HAND_SPEED));
+}
+function digLabel(held, x, y){
+    const r = floorDigAt(x, y); if(!r) return null;
+    return `Dig ${r.what} (${digGrassTime(held, x, y).toFixed(1)}s${hasToolClass(held, r.tool) || !r.byHand ? '' : ', by hand'})`;
 }
 function startDigGrass(x, y){
-    const tool = heldItem(), can = canDigGrass(x, y);
+    const tool = heldItem(), can = canDigGrass(x, y, tool), r = floorDigAt(x, y);
     if(!can.ok){ notify(can.reason, '#ff8a7a'); return; }
-    if(roomForItems('dirt') < 1){ notify('Inventory full!', '#ff8a7a'); return; }
-    startJob({ x, y, time: digGrassTime(tool), tool, verb:'Dig', check: () => canDigGrass(x, y).ok, done: finishDigGrass });
+    if(roomForItems(r.item) < 1){ notify('Inventory full!', '#ff8a7a'); return; }
+    startJob({ x, y, time: digGrassTime(tool, x, y), tool, verb:'Dig', check: () => canDigGrass(x, y, tool).ok, done: finishDigGrass });
 }
 function finishDigGrass(j){
-    if(roomForItems('dirt') < 1){ notify('Inventory full!', '#ff8a7a'); return; }
-    if(isShovel(j.tool)) wearTool(j.tool, 'dirt');
-    giveItems('dirt', 1);
-    notify('+ 1 Dirt', '#a6f0a0');
+    const r = floorDigAt(j.x, j.y); if(!r) return;
+    if(roomForItems(r.item) < 1){ notify('Inventory full!', '#ff8a7a'); return; }
+    if(hasToolClass(j.tool, r.tool)) wearTool(j.tool, r.tag);
+    giveItems(r.item, 1);
+    notify(`+ 1 ${prettify(r.item)}`, '#a6f0a0');
 }
 
 /** Plant view of a block: { crop, stage, k, ripe, rot } or null. */
@@ -2762,10 +3484,15 @@ function harvestPlant(x, y){
     const { crop } = info, held = heldItem();
     const tier = canHarvestTier(crop, held);
     if(!info.rot && !tier.ok){ notify(tier.reason, '#ff8a7a'); return; }
-    const n = info.rot || !info.stage ? 0 : randInt(info.stage.yield[0], info.stage.yield[1]);
-    let seeds = 0;
-    if(info.ripe && Items.has(crop.seed) && crop.seed !== 'berry_bush') seeds = crop.regrow ? (Math.random() < 0.3 ? 1 : 0) : randInt(crop.seeds[0], crop.seeds[1]);
-    const drops = [[crop.id, n], [crop.seed, seeds]];
+    // a stack of crops (up to FARM.maxStack on farmland) gives every plant's share
+    const count = b.plant.count || 1;
+    let n = 0, seeds = 0;
+    for(let k = 0; k < count; k++){
+        if(!info.rot && info.stage) n += randInt(info.stage.yield[0], info.stage.yield[1]);
+        if(!info.rot && info.stage && info.stage.yield[1] > 0 && skillChance('green_thumb', 0.1)) n += randInt(info.stage.yield[0], info.stage.yield[1]);   // Green Thumb: bonus
+        if(info.ripe && Items.has(crop.seed) && crop.seed !== 'berry_bush') seeds += crop.regrow ? (Math.random() < 0.3 ? 1 : 0) : randInt(crop.seeds[0], crop.seeds[1]);
+    }
+    const drops = [[crop.produce, n], [crop.seed, seeds]];
     if(!hasRoomFor(drops)){ notify('Inventory full!', '#ff8a7a'); return; }
     if(tier.tool && n > 0) wearTool(tier.tool, 'plant');
     for(const [id, c] of drops) if(c > 0) giveItems(id, c);
@@ -2775,6 +3502,7 @@ function harvestPlant(x, y){
     else setBlock(x, y, null);                       // a wild plant is gone
     Theaya.dirty.add(cellIndex(x, y));
     notify(info.rot ? `Cleared the rotten ${prettify(crop.id)}.` : `+ ${dropsText(drops)}`, info.rot ? '#d8c08a' : '#a6f0a0');
+    if(n > 0 && info.ripe) gainXp(XP.harvest * count, 'farming');
 }
 /** Ferns: always plant fibers, sometimes a crop seed (tier FARM.fernSeedMaxTier or lower). Then they're gone. */
 function harvestFern(x, y){
@@ -2798,13 +3526,35 @@ function plantSeed(x, y){
     const item = heldItem(), b = blockAt(x, y);
     if(!(item instanceof CropSeedItem)){ notify('Hold seeds to plant.', '#ffb070'); return; }
     if(!b || b.id !== 'farmland'){ notify('Seeds go on farmland (till grass with a hoe).', '#ffb070'); return; }
-    if(b.plant){ notify('Something is already growing here.', '#ffb070'); return; }
+    if(b.plant){
+        // more seeds of the same crop join a young stack (up to FARM.maxStack plants in one cell)
+        const why = stackReason(b, item);
+        if(why){ notify(why, '#ffb070'); return; }
+        b.plant.count = (b.plant.count || 1) + 1;
+        Theaya.dirty.add(cellIndex(x, y));
+        item.removeCount(1);
+        player.inventory._changed({ event:'plant' });
+        notify(`Added a ${prettify(item.crop)} seed: ${b.plant.count}/${FARM.maxStack} growing here`, '#a6f0a0');
+        gainXp(XP.plantRatio, 'farming');
+        return;
+    }
     b.plant = newPlant(item.crop, 0);
     Theaya.plants.add(cellIndex(x, y));
     Theaya.dirty.add(cellIndex(x, y));
     item.removeCount(1);
     player.inventory._changed({ event:'plant' });
-    notify(`Planted ${prettify(item.crop)}${b.water <= 0 ? ' - the soil is dry, water it!' : ''}`, b.water <= 0 ? '#ffb070' : '#a6f0a0');
+    const irrigated = nextToWater(cellIndex(x, y));
+    notify(`Planted ${prettify(item.crop)}${b.water <= 0 && !irrigated ? ' - the soil is dry, water it!' : ''}`, b.water <= 0 && !irrigated ? '#ffb070' : '#a6f0a0');
+    gainXp(XP.plantRatio, 'farming');
+}
+/** Why the held seed can't join the crop already on this farmland (null = it can). */
+function stackReason(b, item){
+    const info = plantInfo(b);
+    if(!b.plant || !(item instanceof CropSeedItem)) return 'Hold seeds to plant.';
+    if(b.plant.crop !== item.crop) return `${prettify(b.plant.crop)} is growing here: seeds of one crop only.`;
+    if(info && (info.k >= 0 || info.rot)) return 'Too late to add seeds: the crop has grown already.';
+    if((b.plant.count || 1) >= FARM.maxStack) return `This farmland is full (${FARM.maxStack}/${FARM.maxStack}).`;
+    return null;
 }
 function waterFarmland(x, y){
     const item = heldItem(), b = blockAt(x, y), w = waterOf(item);
@@ -2848,7 +3598,10 @@ function tickPlants(dt){
             const { x, y } = cellXY(i);
             const heat = temperatureAt(x, y) > SURVIVAL.hotAbove ? 1.5 : 1;
             const over = b.water > FARM.waterMax ? FARM.overflowDrain : 0;   // flood water soaks away faster
-            b.water = Math.max(0, b.water - ((crop ? crop.water : FARM.evaporate) + over) * days * drain * heat);
+            const stack = p ? 1 + FARM.stackThirst * ((p.count || 1) - 1) : 1;   // a stack of crops drinks more
+            b.water = Math.max(0, b.water - ((crop ? crop.water * stack : FARM.evaporate) + over) * days * drain * heat * (1 - 0.08 * skillLevel('green_thumb')));
+            // next to a water cell the soil is irrigated: it stays full, no bucket needed
+            if(nextToWater(i) && b.water < FARM.waterMax) b.water = FARM.waterMax;
             // kept flooded (over floodAt x waterMax) for floodDays: it becomes a water source
             if(b.water > FARM.waterMax * FARM.floodAt){
                 b.flood = (b.flood || 0) + days;
@@ -2880,11 +3633,42 @@ function placeBlock(x, y){
     const item = heldItem();
     if(!(item instanceof BlockItem)){ notify('Hold a block item to place it.', '#ffb070'); return; }
     const pc = playerCell(), g = groundAt(x, y), cur = blockDefAt(x, y), def = Blocks.get(item.block);
-    if((cur && !cur.replaceable) || !g || !g.passable || !def){ notify("Can't build there.", '#ff8a7a'); return; }
+    if(def && def.kind === 'boat'){   // boats go on water, nothing else does
+        if(!g || !g.water || cur){ notify('A boat goes on a water cell.', '#ff8a7a'); return; }
+    } else if((cur && !cur.replaceable) || !g || !g.passable || !def){ notify("Can't build there.", '#ff8a7a'); return; }
     if(pc && pc.x === x && pc.y === y && blocksMover(def, 'player')){ notify("You're standing there.", '#ff8a7a'); return; }
     setBlock(x, y, item.block, def.placeState ? def.placeState() : {});
     item.removeCount(1);
     player.inventory._changed({ event:'place' });
+}
+
+/* Filling in a water cell: with a shovel, a water cell that has no water left (scooped dry or dried up)
+ * can be dug out. It becomes a sand floor (a walkable sand block) and never refills. */
+function canFillWaterCell(x, y, tool){
+    const g = groundAt(x, y), i = cellIndex(x, y);
+    if(!g || !g.water) return { ok:false, reason:'Not a water cell' };
+    if(!hasToolClass(tool ?? heldItem(), 'shovel')) return { ok:false, reason:'Needs a shovel' };
+    if((Theaya.water[i] ?? 0) > 0) return { ok:false, reason:'Empty the water first (use a canteen or bucket)' };
+    if(blockAt(x, y)) return { ok:false, reason:'Something is in the way' };
+    return { ok:true };
+}
+const fillWaterTime = tool => Math.max(0.4, MINE_TIME_SCALE * (Blocks.get('sand')?.hardness ?? 0.35) * 1.2 / (hasToolClass(tool, 'shovel') ? tool.get('mining').speed : HAND_SPEED));
+function startFillWater(x, y){
+    const tool = heldItem(), can = canFillWaterCell(x, y, tool);
+    if(!can.ok){ notify(can.reason, '#ff8a7a'); return; }
+    startJob({ x, y, time: fillWaterTime(tool), tool, verb:'Fill in', check: () => canFillWaterCell(x, y, tool).ok, done: finishFillWater });
+}
+function finishFillWater(j){
+    const { x, y } = j, i = cellIndex(x, y);
+    wearTool(j.tool, 'sand');
+    Theaya.water[i] = 0;
+    Theaya.refilling.delete(i); Theaya.dried.delete(i);
+    const k = Theaya.waterCells.indexOf(i); if(k >= 0) Theaya.waterCells.splice(k, 1);
+    setGround(x, y, FLOOR);
+    setBlock(x, y, 'sand');
+    Theaya.origin[i] = null;
+    Theaya.dirty.add(i);
+    notify('Filled in the empty water cell with sand.', '#e8d28a');
 }
 
 /** Water you can scoop from a cell: { kind:'water'|'puddle', left, max } or null. */
@@ -2948,7 +3732,8 @@ function useHeld(){
         p.inventory._changed({ event:'consume' });
         if(poison && Math.random() < poison.chance){
             // a second bad meal stacks the time, not the damage
-            p.poison = { left: (p.poison ? p.poison.left : 0) + poison.seconds, dps: Math.max(poison.dps, p.poison ? p.poison.dps : 0) };
+            const pm = poisonSkillMult();   // Steel Stomach: shorter, weaker poison
+            p.poison = { left: (p.poison ? p.poison.left : 0) + poison.seconds * pm, dps: Math.max(poison.dps * pm, p.poison ? p.poison.dps : 0) };
             notify(`Ate ${prettify(item.id)}... you feel sick! Poisoned for ${Math.ceil(p.poison.left)}s. Cook meat in a cooking pot.`, '#c6ff6a');
             return;
         }
@@ -2976,7 +3761,7 @@ function inspectCell(x, y){
         if(!def.solid) t += ', you can walk over it';
         parts.push(t);
         if(def.kind === 'farmland'){
-            parts.push(`water ${Math.round(b.water)}/${FARM.waterMax}`);
+            parts.push(`water ${Math.round(b.water)}/${FARM.waterMax}${nextToWater(i) ? ' (irrigated by the water next to it)' : ''}`);
             if(b.flood > 0) parts.push(`flooded for ${(b.flood / FARM.floodDays * 100).toFixed(0)}% of the time it takes to become a pond`);
         }
         if(def.kind === 'ore_heart') parts.push(`slowly grows ${prettify(def.material)} ore in the cave around it`);
@@ -2985,10 +3770,11 @@ function inspectCell(x, y){
         const info = plantInfo(b);
         if(info){
             const state = info.rot ? 'rotten' : info.ripe ? 'ripe' : info.k < 0 ? 'sprout' : `stage ${info.k + 1}`;
-            parts.push(`${prettify(info.crop.id)}: ${state}, ${b.plant.age.toFixed(2)} days old${b.plant.dry > 0 ? ', DRY' : ''}`);
+            parts.push(`${prettify(info.crop.id)}${b.id === 'farmland' ? ` x${b.plant.count || 1}/${FARM.maxStack}` : ''}: ${state}, ${b.plant.age.toFixed(2)} days old${b.plant.dry > 0 ? ', DRY' : ''}`);
             if(info.crop.tier > 0) parts.push(`harvest needs a tier ${info.crop.tier}+ hoe`);
         }
-        if(def.station === 'forge' || def.station === 'pot') parts.push(b.status);
+        if(def.station === 'forge' || def.station === 'pot' || def.station === 'rack') parts.push(b.status);
+        if(def.kind === 'boat') parts.push(boatHasPlayer(i) ? 'you are sailing it' : 'step onto it to sail');
     } else if(g && g.water){
         parts.push(`Water: ${Theaya.water[i]}/${WATER_UNITS} canteen fills left`);
     } else {
@@ -2999,7 +3785,10 @@ function inspectCell(x, y){
     if(Theaya.mud.has(i)) parts.push('muddy');
     if(Theaya.snow.has(i)) parts.push('snowy');
     parts.push(`${Math.round(temperatureAt(x, y))}°C`);
-    notify(`${parts.join(', ')} | ${biome}`, '#e8e8e8');
+    parts.push(biome);
+    // one line per fact; stays 8 s, but fades out as soon as the player walks away from where they inspected it
+    const toast = notify(parts.join('\n'), '#e8e8e8', 8000), pp = player.transform.position;
+    toast.stayNear = { x: pp.x, y: pp.y };
 }
 
 /**
@@ -3007,6 +3796,29 @@ function inspectCell(x, y){
  *   { label, enabled, reason?, warn?, run }
  * `warn` says the player walks to the cell first.
  */
+/** Why a creature action can't be done right now (null = it can). act: { display, require:{ item }, result:{ item, count }, cooldown (s) }. */
+function creatureActionReason(m, key, act){
+    const need = act.require && (act.require.item ?? act.require.id);
+    if(need && player.inventory.countOf(need) < 1) return `Needs ${prettify(need)}`;
+    const wait = ((m.actionAt && m.actionAt[key]) || 0) - Mobs.now;
+    if(wait > 0) return `Wait ${Math.ceil(wait)}s`;
+    const res = act.result && (act.result.item ?? act.result.id);
+    if(res && roomForItems(res) < (act.result.count ?? 1) && !(need && need === res)) return 'Inventory full';
+    return null;
+}
+function doCreatureAction(m, key, act){
+    if(!m.alive) return;
+    const pc = playerCell();
+    if(!pc || hexDist(pc, m) > 1){ notify(`Stay next to the ${m.def.name.toLowerCase()}.`, '#ffb070'); return; }
+    const why = creatureActionReason(m, key, act);
+    if(why){ notify(why, '#ffb070'); return; }
+    const need = act.require && (act.require.item ?? act.require.id), res = act.result && (act.result.item ?? act.result.id);
+    if(need && act.require.consume !== false) player.inventory.take(need, act.require.count ?? 1);
+    if(res) giveItems(res, act.result.count ?? 1);
+    if(act.cooldown){ m.actionAt = m.actionAt || {}; m.actionAt[key] = Mobs.now + act.cooldown; }
+    notify(res ? `+ ${act.result.count ?? 1} ${prettify(res)}` : `${prettify(key)} done`, '#a6f0a0');
+}
+
 function buildActions(x, y){
     const opts = [];
     const pc = playerCell();
@@ -3015,6 +3827,7 @@ function buildActions(x, y){
     const d = hexDist(pc, cell);
     const b = blockAt(x, y), def = b && Blocks.get(b.id), g = groundAt(x, y);
     const held = heldItem(), w = waterOf(held);
+    const isBoatItem = held instanceof BlockItem && !!Blocks.get(held.block) && Blocks.get(held.block).kind === 'boat';
     let approach;
     const getApproach = () => approach !== undefined ? approach : (approach = findApproach(cell));
 
@@ -3047,6 +3860,11 @@ function buildActions(x, y){
     if(mob){
         const a = attackActionFor(mob);
         opts.push(a.reason ? { label: a.label, enabled:false, reason: a.reason } : { label: a.label, enabled:true, run: a.run });
+        // actions a creature offers (its `actions`, see defineElement): milk a cow, shear a sheep...
+        for(const [key, act] of Object.entries(mob.def.actions ?? {})){
+            const why = creatureActionReason(mob, key, act), label = (act.display ?? prettify(key)).replace('@', mob.def.name);
+            opts.push(nearAction(label, () => doCreatureAction(mob, key, act), { enabled: !why, reason: why }));
+        }
     }
 
     if(def){
@@ -3062,6 +3880,10 @@ function buildActions(x, y){
         if(def.kind === 'fern') opts.push(nearAction('Gather plant fibers', () => harvestFern(x, y), { here:true }));
         if(def.kind === 'farmland'){
             if(!b.plant && held instanceof CropSeedItem) opts.push(nearAction(`Plant ${prettify(held.crop)}`, () => plantSeed(x, y)));
+            else if(b.plant && held instanceof CropSeedItem && b.plant.crop === held.crop){
+                const why = stackReason(b, held);
+                opts.push(nearAction(`Add ${prettify(held.crop)} seed (${b.plant.count || 1}/${FARM.maxStack})`, () => plantSeed(x, y), { enabled: !why, reason: why }));
+            }
             if(held instanceof Bucket){
                 const full = b.water >= FARM.waterMax;   // full: pouring more floods it (a pond, given time)
                 const reason = w.empty ? 'The bucket is empty' : b.water >= FARM.floodMax ? "Can't hold any more water" : undefined;
@@ -3069,13 +3891,17 @@ function buildActions(x, y){
             }
         }
         if(!def.replaceable){
-            const mi = miningInfo(def, held), busy = containerBusy(b);
+            const mi = miningInfo(def, held), busy = containerBusy(b), sitting = boatHasPlayer(i);
             opts.push(nearAction(`${verbFor(def)} ${def.name}${mi.ok ? ` (${mi.time.toFixed(1)}s)` : ''}`,
                 () => startMine(x, y),
-                { enabled: mi.ok && !busy, reason: !mi.ok ? mi.reason : busy ? 'Empty it first' : undefined, here: !def.solid }));
+                { enabled: mi.ok && !busy && !sitting, reason: !mi.ok ? mi.reason : busy ? 'Empty it first' : sitting ? "You're sitting in it" : undefined, here: !def.solid }));
         }
     }
     const floorish = !def || def.replaceable;
+    if(isShovel(held) && !def && g && g.water){
+        const can = canFillWaterCell(x, y, held);
+        opts.push(nearAction(`Fill in with sand (${fillWaterTime(held).toFixed(1)}s)`, () => startFillWater(x, y), { enabled: can.ok, reason: can.reason }));
+    }
     const src = waterSourceAt(x, y);
     if(floorish && src && (src.kind === 'water' || w)){
         let reason;
@@ -3090,14 +3916,15 @@ function buildActions(x, y){
             const can = canTill(x, y);
             opts.push(nearAction(`Till soil (${tillTime(held).toFixed(1)}s)`, () => startTill(x, y), { enabled: can.ok, reason: can.reason }));
         }
-        if(!def && Theaya.ground[i] === FLOOR){
-            opts.push(nearAction(`Dig dirt (${digGrassTime(held).toFixed(1)}s${isShovel(held) ? '' : ', by hand'})`, () => startDigGrass(x, y), { here:true }));
+        if(!def && Theaya.ground[i] === FLOOR){ const can = canDigGrass(x, y, held);
+            opts.push(nearAction(digLabel(held, x, y), () => startDigGrass(x, y), { enabled: can.ok, reason: can.reason, here:true }));
         }
         // walk-over blocks (torches, sand) can go on your own cell
         const underfoot = held instanceof BlockItem && !blocksMover(Blocks.get(held.block), 'player');
         if((d > 0 || underfoot) && held instanceof BlockItem) opts.push(nearAction(`Place ${prettify(held.id)}`, () => placeBlock(x, y), { here: underfoot }));
     } else if(!def && d > 0 && held instanceof BlockItem){
-        opts.push({ label:`Place ${prettify(held.id)}`, enabled:false, reason:"Can't build here" });
+        if(isBoatItem && g && g.water) opts.push(nearAction(`Place ${prettify(held.id)}`, () => placeBlock(x, y)));
+        else opts.push({ label:`Place ${prettify(held.id)}`, enabled:false, reason: isBoatItem ? 'A boat goes on a water cell' : "Can't build here" });
     }
 
     if(d === 0){
@@ -3136,7 +3963,7 @@ function tryInteract(){
     const pc = playerCell();
     if(!pc) return;
     const cands = areaZones.home.neighbors(pc.x, pc.y).filter(n => { const d = blockDefAt(n.x, n.y); return d && d.station; });
-    if(!cands.length){ notify('No workbench, loom, cooking pot, forge or chest next to you.', '#ffb070'); return; }
+    if(!cands.length){ notify(`No ${Object.values(STATION_TITLES).map(t => t.toLowerCase()).join(', ')} next to you.`, '#ffb070'); return; }
     const hov = areaZones.home.toCell(mouse.x, mouse.y);
     const pick = (hov && cands.find(c => c.x === hov.x && c.y === hov.y)) || cands[0];
     openStation(pick.x, pick.y);
@@ -3148,6 +3975,12 @@ function checkStation(){
     if(!def || def.station !== s.kind || !pc || hexDist(pc, s) > 1) closeStation();
 }
 
+/** Gear = tools, weapons, buckets and building blocks: crafting these puts them on the hotbar first. */
+function isGear(id){
+    const it = Items.create(id, 1);
+    return !!(it && (it instanceof BlockItem || it.get('mining') || it.get('attack') || it.get('firearm') || it.hasTag('bucket')));
+}
+
 function craft(recipe, times = 1){
     const inv = player.inventory;
     const missing = recipe.missing(inv, 1);
@@ -3156,7 +3989,7 @@ function craft(recipe, times = 1){
     const out = recipe.output;
     if(roomForItems(out.id) < out.count * times){ notify('No room in your inventory.', '#ff8a7a'); return false; }
     recipe.consume(inv, times);
-    giveItems(out.id, out.count * times);
+    giveItems(out.id, out.count * times, isGear(out.id));   // new gear lands on the hotbar first
     notify(`Crafted ${out.count * times} ${prettify(out.id)}`, '#a6f0a0');
     return true;
 }
@@ -3170,10 +4003,6 @@ function craft(recipe, times = 1){
  * The cooking pot tries the fanciest dish first (the recipe using the most
  * kinds of ingredients), so potato + grease fries instead of baking.
  */
-const MACHINES = {
-    forge: { cfg: FORGE, cells: () => Theaya.forges, verb:'Smelting', idle:'Idle: put ore, wood or sand in the input slots', fancyFirst:false },
-    pot:   { cfg: POT,   cells: () => Theaya.pots,   verb:'Cooking',  idle:'Idle: put food in the input slots (a canteen for water)', fancyFirst:true },
-};
 function machineRecipe(b, kind){
     let r = b.active ? Recipe.byId(b.active) : null;
     if(r && !r.canCraft(b.input)){ r = null; b.active = null; b.progress = 0; }
@@ -3208,11 +4037,11 @@ function tickMachines(dt){
                 const out = r.output;
                 if(!machineHasRoom(b, r)) status = 'Output full: take the items out';
                 else {
-                    if(b.burn <= 0){
+                    if(b.burn <= 0 && !M.noFuel){
                         const f = b.fuel.getSlot(0), v = fuelValue(f);
                         if(v > 0){ f.removeCount(1); b.fuel.changed(); b.burn = b.burnMax = v * M.cfg.fuelSeconds; }
                     }
-                    if(b.burn > 0){
+                    if(b.burn > 0 || M.noFuel){
                         status = `${M.verb} ${prettify(out.id)}`;
                         b.progress += dt;
                         if(b.progress >= r.time){
@@ -3230,6 +4059,10 @@ function tickMachines(dt){
             b.status = status;
             const lit = b.burn > 0;
             if(lit !== b.lit){ b.lit = lit; Theaya.dirty.add(i); }
+            if(M.noFuel){   // the rack draws more hanging when it holds something
+                const full = !b.input.isEmpty || !b.output.isEmpty;
+                if(full !== b._full){ b._full = full; Theaya.dirty.add(i); }
+            }
         }
     }
 }
@@ -3630,20 +4463,29 @@ function setTime(hour, date = null){ Clock.set(hour, date); Weather.lastDay = Cl
  * Hostiles that spot you keep chasing: they remember you for HOSTILE.memory
  * seconds after they lose sight of you (walls block sight).
  */
-const CREATURES = {
-    zombie:  { name:'Zombie',  hp:30, speed:0.9, size:15, mover:'zombie', behaviour:'hostile', sight:6, damage:8,  cooldown:1.6, color:'#5d7a4c', dark:true,
-               breaks:{ wood:15, stone:60, glass:10 }, drops:[['rotten_flesh', 0, 2]] },
+const CREATURES = {};   // filled by the defineElements list below (type:'creature')
+defineElements([
+    { id:'zombie', type:'creature', name:'Zombie', hp:30, speed:0.9, size:15, mover:'zombie', behaviour:'hostile', sight:6, damage:8, cooldown:1.6, color:'#5d7a4c', dark:true, xp:30,
+      breaks:{ wood:15, stone:60, glass:10 }, drops:[ { id:'rotten_flesh', chance:1, amount:[0, 2] } ] },
     // rare, daytime only (HOSTILE.orcChance): slower than a zombie, hits much harder but slowly
-    orc:     { name:'Orc',     hp:80, speed:0.6, size:19, mover:'zombie', behaviour:'hostile', sight:7, damage:22, cooldown:3.2, color:'#56733a',
-               breaks:{ wood:7, stone:35, glass:5 }, drops:[['raw_iron', 1, 2, 0.5], ['coal', 1, 3], ['flint', 1, 2, 0.5]] },
-    bear:    { name:'Bear',    hp:60, speed:2.0, size:20, mover:'animal', behaviour:'hostile', sight:4, damage:14, cooldown:1.8, color:'#5a3e2b', biomes:['forest'], count:4, drops:[['raw_bear_meat', 2, 4]] },
-    deer:    { name:'Deer',    hp:24, speed:2.8, size:15, mover:'animal', behaviour:'passive', skittish:4, color:'#a8743f', biomes:['forest', 'plains'], count:8, drops:[['raw_venison', 2, 3]] },
-    rabbit:  { name:'Rabbit',  hp:6,  speed:3.2, size:8,  mover:'animal', behaviour:'passive', skittish:3, color:'#c9bfb2', biomes:['plains', 'desert', 'forest'], count:8, drops:[['raw_rabbit', 1]] },
-    cow:     { name:'Cow',     hp:30, speed:1.2, size:18, mover:'animal', behaviour:'passive', color:'#f2efe8', biomes:['plains'], count:6, drops:[['raw_beef', 2, 4]] },
-    pig:     { name:'Pig',     hp:20, speed:1.4, size:14, mover:'animal', behaviour:'passive', color:'#eaa3a8', biomes:['plains', 'forest'], count:6, drops:[['raw_pork', 2, 3]] },
-    chicken: { name:'Chicken', hp:6,  speed:1.6, size:8,  mover:'animal', behaviour:'passive', color:'#f6f3ea', biomes:['plains'], count:7, drops:[['raw_chicken', 1, 2]] },
-    bird:    { name:'Bird',    hp:4,  speed:3.6, size:7,  mover:'bird',   behaviour:'passive', skittish:3, color:'#3f5a8a', biomes:['plains', 'forest', 'desert'], count:8, drops:[['raw_bird_meat', 1]] },
-};
+    { id:'orc', type:'creature', name:'Orc', hp:80, speed:0.6, size:19, mover:'zombie', behaviour:'hostile', sight:7, damage:22, cooldown:3.2, color:'#56733a', xp:120,
+      breaks:{ wood:7, stone:35, glass:5 },
+      drops:[ { id:'raw_iron', chance:0.5, amount:[1, 2] }, { id:'coal', amount:[1, 3] }, { id:'flint', chance:0.5, amount:[1, 2] } ] },
+    { id:'bear', type:'creature', name:'Bear', hp:60, speed:2.0, size:20, mover:'animal', behaviour:'hostile', sight:4, damage:14, cooldown:1.8, color:'#5a3e2b', biomes:['forest'], count:4, xp:60,
+      drops:[ { id:'raw_bear_meat', amount:[2, 4] }, { id:'raw_leather', amount:[1, 2] } ] },
+    { id:'deer', type:'creature', name:'Deer', hp:24, speed:2.8, size:15, mover:'animal', behaviour:'passive', skittish:4, color:'#a8743f', biomes:['forest', 'plains'], count:8, xp:5,
+      drops:[ { id:'raw_venison', amount:[2, 3] }, { id:'raw_leather', chance:0.8 } ] },
+    { id:'rabbit', type:'creature', name:'Rabbit', hp:6, speed:3.2, size:8, mover:'animal', behaviour:'passive', skittish:3, color:'#c9bfb2', biomes:['plains', 'desert', 'forest'], count:8, xp:3,
+      drops:[ { id:'raw_rabbit' }, { id:'raw_leather', chance:0.35 } ] },
+    { id:'cow', type:'creature', name:'Cow', hp:30, speed:1.2, size:18, mover:'animal', behaviour:'passive', color:'#f2efe8', biomes:['plains'], count:6, xp:5,
+      drops:[ { id:'raw_beef', amount:[2, 4] }, { id:'raw_leather', amount:[1, 2] } ] },
+    { id:'pig', type:'creature', name:'Pig', hp:20, speed:1.4, size:14, mover:'animal', behaviour:'passive', color:'#eaa3a8', biomes:['plains', 'forest'], count:6, xp:4,
+      drops:[ { id:'raw_pork', amount:[2, 3] }, { id:'raw_leather', chance:0.6 } ] },
+    { id:'chicken', type:'creature', name:'Chicken', hp:6, speed:1.6, size:8, mover:'animal', behaviour:'passive', color:'#f6f3ea', biomes:['plains'], count:7,
+      drops:[ { id:'raw_chicken', amount:[1, 2] } ] },
+    { id:'bird', type:'creature', name:'Bird', hp:4, speed:3.6, size:7, mover:'bird', behaviour:'passive', skittish:3, color:'#3f5a8a', biomes:['plains', 'forest', 'desert'], count:8,
+      drops:[ { id:'raw_bird_meat' } ] },
+]);
 /**
  * Hostile spawning: caps, seconds between spawn tries, min / max cells from the player, light
  * level that counts as dark, sun damage. `memory` = seconds a hostile keeps chasing after it
@@ -3728,6 +4570,7 @@ const Mobs = {
         m.hp -= dmg;
         m.hitAt = performance.now();
         this.fx.push({ kind:'number', x: m.px, y: m.py - m.def.size, text: Math.round(dmg), t0: performance.now(), dur: 700 });
+        if(m.def.behaviour === 'neutral') m.provoked = true;   // neutral creatures fight back once hurt
         if(m.def.behaviour === 'passive') m.fleeUntil = this.now + 6;
         else { m.aggroUntil = this.now + 12; m.seenAt = this.now; }   // hurt: it knows where you are
         if(m.hp <= 0) this.kill(m);
@@ -3737,12 +4580,14 @@ const Mobs = {
         this.fx.push({ kind:'poof', x: m.px, y: m.py, t0: performance.now(), dur: 400, color: m.def.color });
         if(!byPlayer) return;
         const drops = rollDrops({ drops: m.def.drops }).filter(([, n]) => n > 0);
+        for(const d of drops) if(skillChance('skinner', 0.15)) d[1]++;   // Skinner: more from every drop
         const kept = drops.map(([id, n]) => [id, n - giveItems(id, n)]);
         notify(`${m.def.name} defeated${kept.length ? ': + ' + dropsText(kept) : ''}`, '#a6f0a0');
+        gainXp(m.def.xp ?? (m.def.behaviour === 'passive' ? XP.passive : XP.hostile), m.def.behaviour === 'passive' ? 'hunting' : 'slain');
     },
     /** Hostiles near a cell forget the player (respawn). */
     calmNear(cell, r){
-        for(const m of [...this.list]) if(m.def.behaviour === 'hostile' && hexDist(m, cell) <= r) this.remove(m);
+        for(const m of [...this.list]) if(this.isHostile(m) && hexDist(m, cell) <= r) this.remove(m);
     },
 
     /* ----- movement / AI ----- */
@@ -3829,8 +4674,10 @@ const Mobs = {
         return this.canEnter(m, c.x, c.y) ? c : { x: c.x, y: c.y, breakIt: true };
     },
     /** Is a hostile after the player? (saw them within HOSTILE.memory seconds, not too far) */
+    /** Hostile creatures, and neutral ones that were provoked (hurt by the player). */
+    isHostile(m){ return m.def.behaviour === 'hostile' || (m.def.behaviour === 'neutral' && !!m.provoked); },
     hunting(m, d, now = this.now){
-        return m.def.behaviour === 'hostile' && now - (m.seenAt ?? -1e9) < HOSTILE.memory && d <= HOSTILE.giveUp;
+        return this.isHostile(m) && now - (m.seenAt ?? -1e9) < HOSTILE.memory && d <= HOSTILE.giveUp;
     },
     /** Chipping at a wall / door on the way to the player (every tick while it does). */
     breakTick(m, dt){
@@ -3861,11 +4708,11 @@ const Mobs = {
     think(m){
         const pc = playerCell(), now = this.now, d = pc ? hexDist(m, pc) : 99;
         m.running = false;
-        if(m.def.behaviour === 'hostile' && pc){
+        if(this.isHostile(m) && pc){
             // spots you in its sight range (walls, doors and rock block its view). Once it's
             // after you it keeps track of you while you're in range, even behind walls.
             const was = this.hunting(m, d, now);
-            if(d <= m.def.sight && (was || lineClear(m, pc, blocksSight))) m.seenAt = now;
+            if(d <= m.def.sight * stealthMult() && (was || lineClear(m, pc, blocksSight))) m.seenAt = now;   // sneaking (Hunter) shrinks how far it notices you
             if(this.hunting(m, d, now)){
                 if(d <= 1){
                     m.facing = Math.atan2(player.transform.position.y - m.py, player.transform.position.x - m.px);
@@ -3893,7 +4740,7 @@ const Mobs = {
                 }
             }
         } else if(pc){
-            const scared = now < m.fleeUntil || (m.def.skittish && d <= m.def.skittish);
+            const scared = now < m.fleeUntil || (m.def.skittish && d <= m.def.skittish * stealthMult());
             if(scared){
                 const step = this.stepAway(m, pc);
                 if(step){ m.running = true; this.commit(m, step.x, step.y); return; }
@@ -3916,7 +4763,7 @@ const Mobs = {
             }
             if(m.next){
                 const w = zone.toWorld(m.next.x, m.next.y);
-                const speed = m.def.speed * HEX_W * (m.running ? 1.4 : 1) * (m.def.behaviour === 'hostile' && now < m.aggroUntil ? 1.2 : 1);
+                const speed = m.def.speed * HEX_W * (m.running ? 1.4 : 1) * (this.isHostile(m) && now < m.aggroUntil ? 1.2 : 1);
                 const dx = w.x - m.px, dy = w.y - m.py, dist = Math.hypot(dx, dy), stepLen = speed * dt;
                 if(dist <= stepLen){
                     this.occ.delete(cellIndex(m.x, m.y));
@@ -4097,7 +4944,7 @@ function attackMob(m, w){
         w.item.wear(1);
         if(w.item.isBroken){ player.inventory.removeRef(w.item); notify(`Your ${prettify(w.item.id)} broke!`, '#ff8a7a'); }
     }
-    Mobs.hurt(m, dmg);
+    Mobs.hurt(m, dmg * (1 + 0.08 * skillLevel('brawler')));   // Brawler
     return true;
 }
 function tickCombat(dt){
@@ -4231,7 +5078,7 @@ function drawMob(m){
     if(m.hp < m.def.hp){
         const w = Math.max(18, s * 1.6), bx = x - w / 2, by = y - s - 10;
         noStroke(); fill(0, 0, 0, 150); rect(bx, by, w, 4, 2);
-        fill(m.def.behaviour === 'hostile' ? '#ff6a5a' : '#7ddc6a'); rect(bx, by, w * Math.max(0, m.hp / m.def.hp), 4, 2);
+        fill(Mobs.isHostile(m) ? '#ff6a5a' : '#7ddc6a'); rect(bx, by, w * Math.max(0, m.hp / m.def.hp), 4, 2);
     }
 }
 function drawCombatFx(){
@@ -4280,12 +5127,16 @@ Mobs.repopulate(true);
  * 11. Input + GameUI state
  * --------------------------------------------------------------------- */
 const GameUI = {
+    choice: null,         // { options: [skill ids] } while the level-up pick is open (the world waits)
+    skillsOpen: false,    // K: the skills panel
     hotbar: 1,            // selected hotbar position (1..7)
     inventoryOpen: false,
     station: null,        // { x, y, kind, openedInventory }
     wheel: null,          // { x, y, options, from }
     picked: null,         // click-to-swap: first slot clicked ({ box, i })
     press: null,          // { ref, x, y, dragging, shift }
+    itemMenu: null,       // right-click menu on an inventory stack: { ref, x, y, amount, dragging }
+    confirmDelete: null,  // { ref } while the delete pop-up is open
     regions: [],          // clickable screen areas, rebuilt every frame by the HUD
     scroll: { hand: 0, station: 0 },
     toasts: [],
@@ -4297,7 +5148,7 @@ const GameUI = {
 
 /** Edge detection over getInput (pressed this tick / released this tick). */
 const Keys = {
-    watch: ['key@tab', 'key@e', 'key@f', 'key@p', 'key@escape', 'key@shift', 'mouse@left', 'mouse@right',
+    watch: ['key@tab', 'key@e', 'key@f', 'key@p', 'key@k', 'key@escape', 'key@shift', 'mouse@left', 'mouse@right',
             'key@1', 'key@2', 'key@3', 'key@4', 'key@5', 'key@6', 'key@7'],
     now: {}, prev: {},
     update(){ this.prev = this.now; this.now = {}; for(const k of this.watch) this.now[k] = !!getInput(k); },
@@ -4309,9 +5160,12 @@ const _wheelInput = { steps: 0 };
 window.addEventListener('wheel', e => { if(e.deltaY) _wheelInput.steps += Math.sign(e.deltaY); }, { passive: true });
 window.addEventListener('keydown', e => { if(e.key === 'Tab') e.preventDefault(); });   // keep Tab for the inventory
 
-function notify(text, color = '#ffffff'){
-    GameUI.toasts.push({ text, color, until: performance.now() + 3000 });
+/** A toast. A newline (\n) in the text starts a new line; ms = how long it stays (default 3 s). */
+function notify(text, color = '#ffffff', ms = 3000){
+    const toast = { text, color, until: performance.now() + ms };
+    GameUI.toasts.push(toast);
     if(GameUI.toasts.length > 5) GameUI.toasts.shift();
+    return toast;
 }
 
 function uiHitAll(mx, my){
@@ -4379,9 +5233,11 @@ function quickActionFor(x, y, wx = null, wy = null){
             }
         }
     }
-    // Shovel on bare grass: dig up dirt (endless, the grass stays)
-    if(isShovel(held) && !def && Theaya.ground[cellIndex(x, y)] === FLOOR){
-        return { label:`Dig dirt (${digGrassTime(held).toFixed(1)}s)`, run: near(() => startDigGrass(x, y)) };
+    // Shovel on a water cell with no water left: fill it in with sand
+    if(isShovel(held) && !def){ const gw = groundAt(x, y); if(gw && gw.water && (Theaya.water[cellIndex(x, y)] ?? 0) <= 0) return { label:`Fill in with sand (${fillWaterTime(held).toFixed(1)}s)`, run: near(() => startFillWater(x, y)) }; }
+    // Shovel / pickaxe on bare floor: dig up dirt, sand or stone (endless, the floor stays)
+    if(!def && floorDigAt(x, y) && hasToolClass(held, floorDigAt(x, y).tool)){
+        return { label: digLabel(held, x, y), run: near(() => startDigGrass(x, y)) };
     }
     // Mining: only with the block's own tool class (an axe on trees, a pickaxe on stone...),
     // and never plants / farmland (crops would get dug up by accident; use the wheel for that).
@@ -4407,9 +5263,6 @@ function openContainer(){
     if(!s || CRAFT_STATIONS.includes(s.kind)) return null;
     return blockAt(s.x, s.y);
 }
-/** Crafting stations: a recipe menu, no item slots. */
-const CRAFT_STATIONS = ['workbench', 'loom'];   // the cooking pot has slots like the forge
-const STATION_TITLES = { workbench:'Workbench', loom:'Loom', pot:'Cooking Pot', forge:'Forge', chest:'Chest' };
 /** Put on the armor at ref (swaps with what was worn). */
 function equipArmor(ref){
     const item = refItem(ref), slot = armorSlotOf(item);
@@ -4436,7 +5289,7 @@ function quickMoveRef(ref){
     if(!c){
         if(ref.box === inv && armorSlotOf(item)) equipArmor(ref);                 // backpack -> worn
         else if(ARMOR_SLOTS.some(s => player.gear[s] === ref.box)) unequipArmor(ref); // worn -> backpack
-        else if(ref.box === inv) inv.quickMove(ref.i);
+        else if(ref.box === inv){ inv.quickMove(ref.i); Tutorial.flags.moved = true; }
         return;
     }
     if(ref.box !== inv && ARMOR_SLOTS.some(s => player.gear[s] === ref.box)){ unequipArmor(ref); return; }
@@ -4449,7 +5302,7 @@ function quickMoveRef(ref){
     let targets;
     if(c.box) targets = [c.box];
     else {
-        const fuelOk = c.fuel.accepts(item) && (!c.fuel.getSlot(0) || c.fuel.getSlot(0).canStackWith(item));
+        const fuelOk = !(MACHINES[GameUI.station.kind] || {}).noFuel && c.fuel.accepts(item) && (!c.fuel.getSlot(0) || c.fuel.getSlot(0).canStackWith(item));
         targets = [fuelOk ? c.fuel : null, c.input.accepts(item) ? c.input : null].filter(Boolean);
     }
     if(!targets.length){ notify(`That can't go in the ${STATION_TITLES[GameUI.station.kind].toLowerCase()}.`, '#ffb070'); return; }
@@ -4458,6 +5311,76 @@ function quickMoveRef(ref){
     }
     inv._changed({ event:'quickMove' });
     if(refItem(ref)) notify('No room for all of it.', '#ffb070');
+}
+
+/* ----- Item menu (right-click a stack in the inventory): split slider + delete (with a confirm pop-up) ----- */
+/** Move `n` of the stack at ref into the first empty slot of the same container. */
+function splitAmountRef(r, n){
+    const it = refItem(r);
+    if(!it || it.count < 2) return false;
+    n = Math.max(1, Math.min(it.count - 1, Math.floor(n)));
+    if(r.box === player.inventory){
+        const inv = player.inventory, t = inv._firstEmpty();
+        if(t == null) return false;
+        inv[t] = it.split(n);
+        inv._changed({ event:'split', slot:r.i, to:t });
+        return true;
+    }
+    for(let k = r.box.firstSlot; k <= r.box.lastSlot; k++){
+        if(!r.box.getSlot(k)){ r.box.setSlot(k, it.split(n)); r.box.changed(); return true; }
+    }
+    return false;
+}
+function openItemMenu(ref, mx, my){
+    const it = refItem(ref);
+    if(!it) return;
+    GameUI.picked = null; GameUI.press = null;
+    GameUI.itemMenu = { ref, x: mx, y: my, amount: Math.max(1, Math.floor(it.count / 2)), dragging: false };
+}
+function closeItemMenu(){ GameUI.itemMenu = null; GameUI.confirmDelete = null; }
+function deleteRef(ref){
+    const it = refItem(ref);
+    if(!it) return;
+    ref.box.setSlot(ref.i, null);
+    ref.box.changed({ event:'delete' });
+    notify(`Deleted ${it.count > 1 ? it.count + ' ' : ''}${prettify(it.id)}`, '#ffb070');
+}
+/** Position and slider geometry of the open item menu (shared by drawing and input). */
+function itemMenuLayout(im){
+    const it = refItem(im.ref), w = 230, canSplit = !!(it && it.count >= 2), h = canSplit ? 176 : 100;
+    const x = Math.max(8, Math.min(width - w - 8, im.x + 6)), y = Math.max(8, Math.min(height - h - 8, im.y + 6));
+    return { x, y, w, h, canSplit, sx: x + 16, sw: w - 32, sy: y + 72 };
+}
+function setItemMenuAmount(im, mx){
+    const it = refItem(im.ref), L = itemMenuLayout(im);
+    if(!it || it.count < 2) return;
+    const k = Math.max(0, Math.min(1, (mx - L.sx) / L.sw));
+    im.amount = 1 + Math.round(k * (it.count - 2));
+}
+/** Input while the item menu / delete confirmation is open. Returns true when it used the input. */
+function handleItemMenuInput(hit, mx, my){
+    if(Keys.pressed('key@tab') || !GameUI.inventoryOpen){ closeItemMenu(); return false; }
+    if(GameUI.confirmDelete){
+        if(Keys.pressed('key@escape')) GameUI.confirmDelete = null;
+        else if(Keys.pressed('mouse@left') && hit && hit.kind === 'button' && hit.enabled !== false) hit.onClick(false);
+        return true;
+    }
+    const im = GameUI.itemMenu, it = refItem(im.ref);
+    if(!it){ closeItemMenu(); return false; }
+    im.amount = Math.max(1, Math.min(Math.max(1, it.count - 1), im.amount));
+    if(Keys.pressed('key@escape')){ closeItemMenu(); return true; }
+    if(Keys.pressed('mouse@right')){
+        if(hit && hit.kind === 'slot' && refItem(hit.ref)) openItemMenu(hit.ref, mx, my); else closeItemMenu();
+        return true;
+    }
+    if(Keys.pressed('mouse@left')){
+        if(hit && hit.kind === 'itemSlider'){ im.dragging = true; setItemMenuAmount(im, mx); }
+        else if(hit && hit.kind === 'button' && hit.enabled !== false) hit.onClick(false);
+        else if(!(hit && hit.kind === 'itemMenu')) closeItemMenu();
+        return true;
+    }
+    if(im.dragging){ if(Keys.down('mouse@left')) setItemMenuAmount(im, mx); else im.dragging = false; }
+    return true;
 }
 function slotClick(ref, shift){
     const inv = player.inventory;
@@ -4483,7 +5406,7 @@ function setPaused(on = true){
     GameUI.paused = on;
     GameUI.pauseView = 'main';
     theayaScene.pause = on;
-    if(on){ GameUI.wheel = null; GameUI.press = null; }
+    if(on){ GameUI.wheel = null; GameUI.press = null; GameUI.itemMenu = null; GameUI.confirmDelete = null; }
 }
 const togglePause = () => setPaused(!GameUI.paused);
 
@@ -4503,11 +5426,18 @@ function handleInput(){
     const mx = mouse.rawX, my = mouse.rawY;
     const hits = uiHitAll(mx, my), hit = hits[0] ?? null;
 
+    if(GameUI.choice){   // level-up pick: click a card or press 1 / 2 / 3
+        GameUI.choice.options.forEach((id, k) => { if(Keys.pressed('key@' + (k + 1))) pickChoice(id); });
+        if(GameUI.choice && Keys.pressed('mouse@left') && hit && hit.kind === 'button' && hit.enabled !== false) hit.onClick(false);
+        return;
+    }
     if(Keys.pressed('key@p')){ togglePause(); return; }
+    if(!GameUI.paused && Keys.pressed('key@k')) GameUI.skillsOpen = !GameUI.skillsOpen;
     if(GameUI.paused){ handlePausedInput(hit); return; }
+    if((GameUI.itemMenu || GameUI.confirmDelete) && handleItemMenuInput(hit, mx, my)) return;   // the item menu / delete pop-up is modal
 
     if(Keys.pressed('key@tab')){
-        GameUI.inventoryOpen = !GameUI.inventoryOpen; GameUI.picked = null; GameUI.wheel = null;
+        GameUI.inventoryOpen = !GameUI.inventoryOpen; GameUI.picked = null; GameUI.wheel = null; GameUI.itemMenu = null; GameUI.confirmDelete = null;
         if(!GameUI.inventoryOpen && openContainer()) closeStation();
     }
     // Calendar: clicking anywhere off the clock / calendar folds it back up (that click does nothing else)
@@ -4568,7 +5498,7 @@ function handleInput(){
     }
     if(Keys.pressed('mouse@right') && !clickTaken){
         if(GameUI.wheel) GameUI.wheel = null;
-        else if(hit && hit.kind === 'slot'){ if(GameUI.inventoryOpen) splitRef(hit.ref); }
+        else if(hit && hit.kind === 'slot'){ if(GameUI.inventoryOpen && refItem(hit.ref)) openItemMenu(hit.ref, mx, my); }
         else if(!hit && !consoleBlocks) openWheelAt(mouse.x, mouse.y);   // right click: the full action wheel
     }
 }
@@ -4576,17 +5506,24 @@ function handleInput(){
 /** Every game tick (scene script). */
 function gameTick(dt){
     if(!Theaya.ready) return;
+    if(Menu.active){ handleMenuInput(); return; }   // the start menu: the world behind it waits
+    if(!GameUI.paused) openChoice();   // a level-up is waiting for its skill / upgrade pick
     handleInput();
-    if(GameUI.paused) return;   // the pause menu is open: nothing in the world moves
+    if(GameUI.paused || GameUI.choice) return;   // the pause menu / level-up pick is open: nothing in the world moves
+    if(Tutorial.active) Tutorial.tick();
+    // walking speed follows Active Runner and sneaking right away (not just when a walk starts)
+    const walk = areaZones.home._linked && areaZones.home._linked.get(player);
+    if(walk && walk.move && walk.move.settings) walk.move.settings.speed = playerSpeed();
     Clock.advance(dt);
     Weather.tick(dt);
-    tickSurvival(dt);
+    if(!Tutorial.active) tickSurvival(dt);   // the tutorial is calm: no hunger, thirst or monsters
     tickJob(dt);
+    tickBoat();
     tickWorld();
     tickPlants(dt);
     tickForges(dt);
     Regrowth.tick(dt);
-    Mobs.tick(dt);
+    if(!Tutorial.active) Mobs.tick(dt);
     tickCombat(dt);
     // doors are drawn open while the player stands in them
     const pc = playerCell(), here = pc ? cellIndex(pc.x, pc.y) : -1;
@@ -4820,6 +5757,10 @@ function drawBlockBody(g, def, b, c, poly, i = -1){
                 g.fill('#a8ecff'); g.rect(c.x - 12, c.y + 9, 24 * fl, 3, 1);
             }
             if(b.plant) drawPlant(g, b.plant.crop, plantInfo(b), c, h);
+            if(b.plant && (b.plant.count || 1) > 1){   // a stack of crops: a count badge
+                g.noStroke(); g.fill(0, 0, 0, 140); g.rect(c.x - 15, c.y - 15, 17, 11, 3);
+                g.fill('#ffe9a0'); g.textSize(10); g.textAlign(CENTER, CENTER); g.text('x' + b.plant.count, c.x - 6.5, c.y - 9.5);
+            }
             if(b.plant && b.water <= 0){ g.noStroke(); g.fill('#ffb347'); g.textSize(11); g.textAlign(CENTER, CENTER); g.text('!', c.x + 12, c.y - 12); }
             break;
         }
@@ -4868,8 +5809,21 @@ function drawBlockBody(g, def, b, c, poly, i = -1){
             g.stroke(shade(def.color, -0.25)); g.strokeWeight(1);
             g.line(c.x - 15, c.y - 5, c.x + 15, c.y - 5); g.line(c.x - 15, c.y + 5, c.x + 15, c.y + 5);
             break;
+        case 'boat': {   // a little wooden rowboat floating on the water cell
+            const aboard = boatHasPlayer(i);
+            g.noStroke(); g.fill(0, 0, 40, 60); g.ellipse(c.x + 1, c.y + 8, 36, 12);                      // shadow on the water
+            g.fill(shade(def.color, -0.25)); g.stroke(shade(def.color, -0.55)); g.strokeWeight(1.5);
+            g.arc(c.x, c.y - 1, 34, 24, 0, Math.PI, CHORD);                                              // hull
+            g.fill(def.color); g.ellipse(c.x, c.y - 1, 34, 11);                                          // deck
+            g.noFill(); g.stroke('#3f3f46'); g.strokeWeight(2); g.ellipse(c.x, c.y - 1, 34, 11);         // rubber seal
+            g.stroke(shade(def.color, -0.35)); g.strokeWeight(1);
+            g.line(c.x - 7, c.y - 5, c.x - 7, c.y + 3); g.line(c.x + 5, c.y - 6, c.x + 5, c.y + 4);       // planks
+            if(aboard){ g.noStroke(); g.fill(255, 255, 255, 60); g.ellipse(c.x, c.y - 1, 24, 6); }
+            break;
+        }
         case 'station':
-            if(def.station === 'workbench'){
+            if(STATION_DRAW[def.station]) STATION_DRAW[def.station](g, def, b, c, poly, i);   // a custom look from defineStation
+            else if(def.station === 'workbench'){
                 g.fill(shade(def.color, -0.3)); g.noStroke(); g.rect(c.x - 12, c.y + 4, 4, 8); g.rect(c.x + 8, c.y + 4, 4, 8);
                 g.fill(def.color); g.stroke(shade(def.color, -0.4)); g.rect(c.x - 15, c.y - 10, 30, 16, 2);
                 g.stroke(shade(def.color, -0.2)); g.line(c.x - 5, c.y - 10, c.x - 5, c.y + 6); g.line(c.x + 5, c.y - 10, c.x + 5, c.y + 6);
@@ -4885,7 +5839,7 @@ function drawBlockBody(g, def, b, c, poly, i = -1){
                 g.fill(def.color); g.stroke(shade(def.color, -0.45)); g.ellipse(c.x, c.y + 2, 30, 22);
                 g.fill(lit ? '#9a5a2a' : '#7a4a2a'); g.ellipse(c.x, c.y - 3, 22, 9);
                 if(lit){ g.noFill(); g.stroke(255, 255, 255, 150); g.strokeWeight(1.5); g.arc(c.x - 3, c.y - 12, 6, 8, Math.PI, 0); g.arc(c.x + 4, c.y - 14, 6, 8, Math.PI, 0); }   // steam
-            } else if(def.station === 'chest'){
+            } else if(b && b.box){   // a container (chest)
                 g.fill(shade(def.color, -0.15)); g.stroke(shade(def.color, -0.45)); g.rect(c.x - 15, c.y - 10, 30, 22, 3);
                 g.fill(def.color); g.rect(c.x - 15, c.y - 12, 30, 9, 3);
                 g.noStroke(); g.fill('#d8b450'); g.rect(c.x - 3, c.y - 6, 6, 7, 1);
@@ -4913,7 +5867,32 @@ function drawBlockBody(g, def, b, c, poly, i = -1){
     }
 }
 
-const Render = { gfx: null };
+const Render = { gfx: null, probeAt: 0, errored: false };
+/**
+ * The terrain is drawn once into an offscreen canvas and only changed cells are redrawn. Browsers
+ * can throw such a canvas's pixels away (tab in the background, GPU reset, memory pressure), and
+ * then every tile that isn't redrawn shows the blue scene color through (the "blue haze": a tile
+ * came back only when something redrew it). So: probe a few cells now and then, and redraw
+ * everything when the pixels are gone. Coming back to the tab also redraws.
+ */
+function terrainLost(g){
+    try{
+        const ctx = g.drawingContext, zone = Theaya.zone;
+        for(const [x, y] of [[0, 0], [Math.floor(MAP_COLS / 2), Math.floor(MAP_ROWS / 2)], [MAP_COLS - 1, MAP_ROWS - 1]]){
+            const c = zone.toWorld(x, y);
+            if(ctx.getImageData(Math.round(c.x), Math.round(c.y), 1, 1).data[3] === 0) return true;   // every drawn cell is opaque at its center
+        }
+    } catch(e){ /* unreadable canvas: can't tell, leave it */ }
+    return false;
+}
+for(const ev of ['visibilitychange', 'focus', 'pageshow']) window.addEventListener(ev, () => { if(ev !== 'visibilitychange' || !document.hidden) Theaya.fullRedraw = true; });
+/** Draw one cell; a cell that throws is reported once and skipped so it can't stop the rest. */
+function safeDrawCell(g, i){
+    try{ drawCellOn(g, i); }
+    catch(e){
+        if(!Render.errored){ Render.errored = true; console.error(`drawCellOn failed for cell ${i}:`, e); }
+    }
+}
 /** Scene function script (world space, under the objects): the cached terrain. */
 function drawTerrain(){
     if(!Theaya.ready) return;
@@ -4925,14 +5904,20 @@ function drawTerrain(){
         T.fullRedraw = true;
     }
     const g = Render.gfx;
+    const now = performance.now();
+    if(!T.fullRedraw && now - Render.probeAt > 1000){
+        Render.probeAt = now;
+        if(terrainLost(g)) T.fullRedraw = true;
+    }
     if(T.fullRedraw){
-        g.clear();
-        for(let i = 0; i < MAP_COLS * MAP_ROWS; i++) drawCellOn(g, i);
         T.fullRedraw = false;
         T.dirty.clear();
+        g.clear();
+        for(let i = 0; i < MAP_COLS * MAP_ROWS; i++) safeDrawCell(g, i);
     } else if(T.dirty.size){
-        for(const i of T.dirty) drawCellOn(g, i);
+        const cells = [...T.dirty];
         T.dirty.clear();
+        for(const i of cells) safeDrawCell(g, i);
     }
     const o = zone.transform.position;
     push(); imageMode(CORNER); image(g, o.x, o.y); pop();
@@ -4972,7 +5957,8 @@ const worldOverlay = {
         for(const c of zone.remainingPath(player)){ const w = zone.toWorld(c.x, c.y); circle(w.x, w.y, 5); }
         pop();
         // hovered / targeted cells
-        if(!GameUI.wheel && !uiHit(mouse.rawX, mouse.rawY)){
+        if(Tutorial.active) Tutorial.drawWorld();
+        if(!Menu.active && !GameUI.wheel && !uiHit(mouse.rawX, mouse.rawY)){
             const hc = zone.toCell(mouse.x, mouse.y);
             if(hc){
                 const q = quickActionFor(hc.x, hc.y, mouse.x, mouse.y);   // gold = left click uses the tool here, red = it can't
@@ -5073,14 +6059,22 @@ const skyLayer = {
     _darkness(){
         const dark = Math.min(0.82, (1 - Clock.light()) * 0.74 + Weather.param('darkness', 0));
         // caves stay dark in daytime too: find the cave cells on screen
-        const zone = Theaya.zone, cam = World.camera.getBounds(HEX_W), caves = [];
-        if(dark < CAVE_DARKNESS){
+        const zone = Theaya.zone, cam = World.camera.getBounds(HEX_W), caves = [], outside = [];
+        // standing in a cave: the world outside it fades to almost black (and fades back in when you leave)
+        const pc = playerCell(), inCave = !!(pc && Theaya.biome[cellIndex(pc.x, pc.y)] === 'cave');
+        this.caveK = (this.caveK || 0) + ((inCave ? 1 : 0) - (this.caveK || 0)) * 0.12;
+        if(!inCave && this.caveK < 0.01) this.caveK = 0;
+        const outK = this.caveK, outDark = Math.max(dark, CAVE_OUTSIDE_DARKNESS * outK);
+        if(dark < CAVE_DARKNESS || outK > 0){
             const a = zone.toCell(cam.left, cam.top), b = zone.toCell(cam.right, cam.bottom);
             const x0 = Math.max(0, (a ? a.x : 0) - 1), y0 = Math.max(0, (a ? a.y : 0) - 1);
             const x1 = Math.min(MAP_COLS - 1, (b ? b.x : MAP_COLS - 1) + 1), y1 = Math.min(MAP_ROWS - 1, (b ? b.y : MAP_ROWS - 1) + 1);
-            for(let y = y0; y <= y1; y++) for(let x = x0; x <= x1; x++) if(Theaya.biome[cellIndex(x, y)] === 'cave') caves.push({ x, y });
+            for(let y = y0; y <= y1; y++) for(let x = x0; x <= x1; x++){
+                if(Theaya.biome[cellIndex(x, y)] === 'cave'){ if(dark < CAVE_DARKNESS) caves.push({ x, y }); }
+                else if(outK > 0) outside.push({ x, y });
+            }
         }
-        if(dark < 0.01 && !caves.length) return;
+        if(dark < 0.01 && !caves.length && !outside.length) return;
         const sc = 0.5, w = Math.ceil(width * sc), h = Math.ceil(height * sc);
         if(!this.gfx || this.gfx.width !== w || this.gfx.height !== h){ this.gfx = createGraphics(w, h); this.gfx.pixelDensity(1); }
         const g = this.gfx, sp = World.camera.superPosition;
@@ -5095,14 +6089,23 @@ const skyLayer = {
                 g.endShape(CLOSE);
             }
         }
+        if(outside.length && outDark > dark){
+            // extra darkness so outside cells end up outDark dark overall
+            g.fill(6, 10, 30, 255 * (1 - (1 - outDark) / (1 - dark)));
+            for(const c of outside){
+                g.beginShape();
+                for(const p of zone.cellPolygon(c.x, c.y)){ const k = 1.04, wc = zone.toWorld(c.x, c.y); g.vertex((wc.x + (p.x - wc.x) * k - sp.x) * sc, (wc.y + (p.y - wc.y) * k - sp.y) * sc); }
+                g.endShape(CLOSE);
+            }
+        }
         // holding a light (torch, grease torch, lamp) widens your own light: its glow x heldLight / light
         const held = heldItem(), heldDef = held instanceof BlockItem ? Blocks.get(held.block) : null;
         const holdsLight = !!(heldDef && heldDef.light && held.hasTag('light'));
         const heldR = holdsLight ? Math.max(120, heldDef.light * TORCH.heldLight / TORCH.light) : 120;
         const lights = [{ x: player.transform.position.x, y: player.transform.position.y, r: heldR, warm: holdsLight }];
-        for(const i of [...Theaya.forges, ...Theaya.pots]){   // lit forges and cooking pots
+        for(const M of Object.values(MACHINES)) for(const i of M.cells()){   // lit machines (forges, cooking pots...) glow by their `light`
             const b = Theaya.blocks[i];
-            if(b && b.lit){ const { x, y } = cellXY(i), p = Theaya.zone.toWorld(x, y); lights.push({ x: p.x, y: p.y, r: Theaya.pots.has(i) ? 70 : 95, warm: true }); }
+            if(M.light && b && b.lit){ const { x, y } = cellXY(i), p = Theaya.zone.toWorld(x, y); lights.push({ x: p.x, y: p.y, r: M.light, warm: true }); }
         }
         const flick = performance.now() / 1000;
         for(const i of Theaya.lights){   // torches + ore hearts
@@ -5398,6 +6401,25 @@ function drawItemIcon(item, cx, cy, s){
             fill(255, 255, 255, 120); ellipse(cx - r * 0.15, cy - r * 0.34, r * 0.3, r * 0.1);
             fill(col); ellipse(cx + r * 0.2, cy - r * 0.15, r * 0.18, r * 0.35);   // a drip
             break;
+        case 'hide':   // a pelt: wet / raw ones have a bluish tint
+            beginShape(); vertex(cx - r * 0.7, cy - r * 0.4); vertex(cx - r * 0.2, cy - r * 0.55); vertex(cx + r * 0.2, cy - r * 0.45); vertex(cx + r * 0.7, cy - r * 0.55);
+            vertex(cx + r * 0.55, cy); vertex(cx + r * 0.75, cy + r * 0.5); vertex(cx + r * 0.1, cy + r * 0.4); vertex(cx - r * 0.3, cy + r * 0.6); vertex(cx - r * 0.5, cy + r * 0.1); endShape(CLOSE);
+            if(look.accent){ noStroke(); fill(look.accent + '55'); ellipse(cx, cy, r * 0.9, r * 0.5); }
+            break;
+        case 'rubber':
+            fill(col); rect(cx - r * 0.6, cy - r * 0.35, r * 1.2, r * 0.7, r * 0.3);
+            noStroke(); fill(255, 255, 255, 60); ellipse(cx - r * 0.2, cy - r * 0.15, r * 0.5, r * 0.18);
+            break;
+        case 'rack':
+            strokeWeight(r * 0.16); stroke('#6b4a2a');
+            line(cx - r * 0.65, cy + r * 0.6, cx - r * 0.65, cy - r * 0.6); line(cx + r * 0.65, cy + r * 0.6, cx + r * 0.65, cy - r * 0.6); line(cx - r * 0.75, cy - r * 0.5, cx + r * 0.75, cy - r * 0.5);
+            noStroke(); fill('#9a4a3a'); rect(cx - r * 0.45, cy - r * 0.45, r * 0.25, r * 0.7, 2); fill('#b07a45'); rect(cx - r * 0.08, cy - r * 0.45, r * 0.3, r * 0.9, 2); fill('#7a3a32'); rect(cx + r * 0.35, cy - r * 0.45, r * 0.2, r * 0.55, 2);
+            break;
+        case 'boat':
+            fill(shade(col, -0.2)); arc(cx, cy, r * 1.6, r * 1.1, 0, Math.PI, CHORD);
+            fill(col); ellipse(cx, cy, r * 1.6, r * 0.5);
+            noFill(); stroke(look.accent || '#3f3f46'); strokeWeight(2); ellipse(cx, cy, r * 1.6, r * 0.5);
+            break;
         case 'pot':
             fill(col); ellipse(cx, cy + r * 0.1, r * 1.3, r * 1.0);
             noStroke(); fill('#7a4a2a'); ellipse(cx, cy - r * 0.2, r * 1.0, r * 0.35);
@@ -5449,15 +6471,110 @@ function drawStats(){
     const p = player, R = p.nutritionRules, rate = p.nutritionDamageRate(), def = playerDefense();
     const extra = [];
     if(rate > 0) extra.push([`Starving: -${rate.toFixed(2)} health/s`, '#ff8a7a']);
+    if(isSneaking()) extra.push([`Sneaking: ${pct(1 - stealthSight(skillLevel('hunter')))} harder to notice`, '#c9a86a']);
     if(p.poison) extra.push([`Poisoned: -${p.poison.dps.toFixed(1)} health/s (${Math.ceil(p.poison.left)}s)`, '#c6ff6a']);
     if(p.regenBuff) extra.push([`Well fed: +${p.regenBuff.rate.toFixed(1)} health/s (${Math.ceil(p.regenBuff.left)}s)`, '#ff9ac0']);
     if(def > 0) extra.push([`Armor: ${def} defense (-${Math.round(100 - 100 * ARMOR_SCALE / (ARMOR_SCALE + def))}% damage)`, '#bcd6ff']);
-    panel(12, 12, 248, 84 + extra.length * 18);
+    const bottom = 12 + 122 + extra.length * 18;
+    panel(12, 12, 248, 122 + extra.length * 18);
     statBar(24, 24, 150, 'Health', p.health, p.maxHealth, '#e05555');
     statBar(24, 46, 150, 'Hunger', p.hunger, 100, '#e0a040', p.satruation, R.hunger.threshold);
     statBar(24, 68, 150, 'Thirst', p.thirst, 100, '#4aa3ff', 0, R.thirst.threshold);
+    // experience: the bar fills toward the next level
+    noStroke(); fill(255, 255, 255, 25); rect(24, 90, 150, 12, 6);
+    fill('#9ad84a'); rect(24, 90, 150 * Math.min(1, Levels.fraction), 12, 6);
+    fill(235); textSize(11); textAlign(LEFT, CENTER);
+    text(`Level ${Levels.level}  ${Math.floor(Levels.xp)}/${Levels.need()} xp`, 24 + 150 + 8, 96);
+    if(Levels.flash.until > performance.now()){ fill('#d8ff9a'); textSize(10.5); text(Levels.flash.text, 24, 112); }
     textSize(11); textAlign(LEFT, CENTER);
-    extra.forEach(([t, c], k) => { fill(c); text(t, 24, 92 + k * 18); });
+    extra.forEach(([t, c], k) => { fill(c); text(t, 24, 130 + k * 18); });
+    return bottom;   // y of the panel's bottom edge
+}
+/** The level-up pick: three cards over a dimmed world. Click one or press 1 / 2 / 3. */
+/** A coloured button for the item menu / confirm pop-up. */
+function colorButton(x, y, w, h, label, enabled, onClick, base){
+    const over = enabled && mouse.rawX >= x && mouse.rawX <= x + w && mouse.rawY >= y && mouse.rawY <= y + h;
+    noStroke(); fill(enabled ? shade(base, over ? 0.15 : 0) : '#3a3d44'); rect(x, y, w, h, 6);
+    fill(enabled ? 255 : 140); textSize(12); textAlign(CENTER, CENTER); text(label, x + w / 2, y + h / 2 + 1);
+    region(x, y, w, h, { kind:'button', enabled, onClick });
+}
+function drawItemMenu(){
+    const im = GameUI.itemMenu, it = im && refItem(im.ref);
+    if(!it){ GameUI.itemMenu = null; return; }
+    im.amount = Math.max(1, Math.min(Math.max(1, it.count - 1), im.amount));
+    const L = itemMenuLayout(im), { x, y, w, h } = L;
+    panel(x, y, w, h, null, { kind:'itemMenu' });
+    drawItemIcon(it, x + 28, y + 28, 34);
+    noStroke(); fill(240); textAlign(LEFT, TOP); textStyle(BOLD); textSize(14); text(prettify(it.id), x + 54, y + 12); textStyle(NORMAL);
+    fill(170); textSize(11.5); text(`${it.count} in this stack`, x + 54, y + 32);
+    let by = y + 58;
+    if(L.canSplit){
+        fill(220); textSize(12); textAlign(LEFT, TOP); text('Split off', x + 16, by);
+        textAlign(RIGHT, TOP); fill('#ffd75e'); text(`${im.amount}  (keeps ${it.count - im.amount})`, x + w - 16, by);
+        const k = it.count > 2 ? (im.amount - 1) / (it.count - 2) : 0, hx = L.sx + k * L.sw, ty = L.sy + 6;
+        noStroke(); fill(60, 66, 80); rect(L.sx, ty - 3, L.sw, 6, 3);
+        fill('#4f8f5a'); rect(L.sx, ty - 3, hx - L.sx, 6, 3);
+        fill(im.dragging ? '#ffe9a0' : '#ffd75e'); stroke(20, 24, 32); strokeWeight(1.5); circle(hx, ty, 15); noStroke();
+        region(L.sx - 8, L.sy - 6, L.sw + 16, 26, { kind:'itemSlider' });
+        colorButton(x + 16, y + 104, w - 32, 26, `Split off ${im.amount}`, true, () => {
+            if(splitAmountRef(im.ref, im.amount)) closeItemMenu(); else notify('No free slot to split into.', '#ff8a7a');
+        }, '#3d7347');
+        by = y + 138;
+    } else by = y + 62;
+    colorButton(x + 16, by, w - 32, 26, 'Delete', true, () => { GameUI.confirmDelete = { ref: im.ref }; }, '#a2433e');
+}
+function drawConfirmDelete(){
+    const cd = GameUI.confirmDelete, it = cd && refItem(cd.ref);
+    if(!it){ GameUI.confirmDelete = null; return; }
+    noStroke(); fill(6, 8, 14, 170); rect(0, 0, width, height);
+    region(0, 0, width, height, { kind:'pauseScreen' });   // nothing under the pop-up reacts
+    const w = 320, h = 150, x = Math.round(width / 2 - w / 2), y = Math.round(height / 2 - h / 2);
+    panel(x, y, w, h, 'Delete item?', { kind:'confirmDelete' });
+    noStroke(); fill(225); textSize(13); textAlign(LEFT, TOP);
+    text(`Delete ${it.count > 1 ? it.count + ' ' : ''}${prettify(it.id)}? This can't be undone.`, x + 14, y + 40, w - 28, 44);
+    colorButton(x + 14, y + h - 46, (w - 40) / 2, 32, 'Delete', true, () => { deleteRef(cd.ref); closeItemMenu(); }, '#a2433e');
+    colorButton(x + 26 + (w - 40) / 2, y + h - 46, (w - 40) / 2, 32, 'Cancel', true, () => { GameUI.confirmDelete = null; }, '#4a5568');
+}
+function drawChoice(){
+    const c = GameUI.choice;
+    noStroke(); fill(6, 8, 14, 190); rect(0, 0, width, height);
+    region(0, 0, width, height, { kind:'pauseScreen' });   // nothing under the cards reacts to the mouse
+    const cw = 230, ch = 250, gap = 18, total = c.options.length * cw + (c.options.length - 1) * gap;
+    const x0 = Math.round(width / 2 - total / 2), y0 = Math.round(height / 2 - ch / 2);
+    textAlign(CENTER, TOP); noStroke(); fill('#ffd75e'); textStyle(BOLD); textSize(24);
+    text(`Level ${Levels.level}!`, width / 2, y0 - 72);
+    textStyle(NORMAL); fill(220); textSize(13);
+    text(`Choose a skill or upgrade${Levels.pending > 1 ? `  (${Levels.pending} picks waiting)` : ''}`, width / 2, y0 - 40);
+    c.options.forEach((id, k) => {
+        const d = Skills.defs[id], lv = Skills.level(id), x = x0 + k * (cw + gap);
+        const over = mouse.rawX >= x && mouse.rawX <= x + cw && mouse.rawY >= y0 && mouse.rawY <= y0 + ch;
+        noStroke(); fill(over ? 'rgba(34,42,56,0.98)' : 'rgba(22,28,38,0.96)'); rect(x, y0, cw, ch, 12);
+        stroke(over ? d.color : 'rgba(255,255,255,0.18)'); strokeWeight(over ? 2.5 : 1); noFill(); rect(x + 0.5, y0 + 0.5, cw - 1, ch - 1, 12);
+        noStroke(); fill(d.color); rect(x, y0, cw, 6, 12, 12, 0, 0);
+        fill(150); textSize(11); textAlign(LEFT, TOP); text(d.kind === 'skill' ? 'SKILL' : 'UPGRADE', x + 16, y0 + 18);
+        textAlign(RIGHT, TOP); text(`[${k + 1}]`, x + cw - 16, y0 + 18);
+        fill(245); textAlign(LEFT, TOP); textStyle(BOLD); textSize(18); text(d.name, x + 16, y0 + 38); textStyle(NORMAL);
+        fill(d.color); textSize(12.5); text(lv === 0 ? 'New!' : `Level ${lv}  >  ${lv + 1}`, x + 16, y0 + 66);
+        // level pips
+        for(let p = 0; p < d.max; p++){ fill(p < lv ? d.color : p === lv ? shade(d.color, -0.1) : 'rgba(255,255,255,0.14)'); if(p === lv){ stroke(255, 255, 255, 120); strokeWeight(1); } else noStroke(); rect(x + 16 + p * Math.min(18, (cw - 32) / d.max), y0 + 88, Math.min(14, (cw - 32) / d.max - 3), 6, 2); }
+        noStroke(); fill(215); textSize(12.5); textAlign(LEFT, TOP);
+        text(d.desc(lv + 1), x + 16, y0 + 108, cw - 32, 80);
+        if(lv > 0){ fill(130); textSize(11); text(`Now: ${d.desc(lv)}`, x + 16, y0 + ch - 56, cw - 32, 44); }
+        region(x, y0, cw, ch, { kind:'button', enabled:true, onClick: () => pickChoice(id) });
+    });
+}
+/** K: every skill and upgrade, with its level. */
+function drawSkills(){
+    const ids = Object.keys(Skills.defs), w = 360, rowH = 38, h = 52 + ids.length * rowH + 14;
+    const x = Math.round(width / 2 - w / 2), y = Math.max(12, Math.round(height / 2 - h / 2));
+    panel(x, y, w, h, `Skills and upgrades  (level ${Levels.level})`);
+    noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text('K to close', x + w - 14, y + 13);
+    ids.forEach((id, k) => {
+        const d = Skills.defs[id], lv = Skills.level(id), ry = y + 40 + k * rowH;
+        noStroke(); fill(lv ? 235 : 120); textSize(12.5); textAlign(LEFT, TOP); text(d.name, x + 14, ry);
+        fill(lv ? 170 : 100); textSize(10.5); text(lv ? d.desc(lv) : d.kind === 'skill' ? 'Not learned yet' : 'Not taken yet', x + 14, ry + 16, w - 28, 22);
+        for(let p = 0; p < d.max; p++){ fill(p < lv ? d.color : 'rgba(255,255,255,0.14)'); rect(x + w - 14 - (d.max - p) * 9, ry + 3, 7, 7, 2); }
+    });
 }
 /** Top-right: time, date, season, temperature and weather. Returns the panel's bottom y. */
 function drawClock(){
@@ -5617,9 +6734,9 @@ function drawInventory(){
 }
 
 function stationLayout(){
-    const kind = GameUI.station ? GameUI.station.kind : 'workbench';
-    const w = kind === 'chest' ? 8 * (SLOT + SLOT_GAP) - SLOT_GAP + 28 : 460;
-    const h = kind === 'chest' ? Math.ceil(CHEST_SLOTS / 8) * (SLOT + SLOT_GAP) - SLOT_GAP + 62 : Math.min(height - 170, 560);
+    const st = GameUI.station, cb = st && blockAt(st.x, st.y), slots = cb && cb.box ? cb.box.size : 0;   // a container (chest) shows its slots in a grid
+    const w = slots ? 8 * (SLOT + SLOT_GAP) - SLOT_GAP + 28 : 460;
+    const h = slots ? Math.ceil(slots / 8) * (SLOT + SLOT_GAP) - SLOT_GAP + 62 : Math.min(height - 170, 560);
     const x = GameUI.inventoryOpen ? width / 2 + 8 : width / 2 - w / 2;
     return { x, y: Math.max(12, hotbarLayout().y - 44 - h), w, h };
 }
@@ -5627,16 +6744,16 @@ function drawStation(){
     const s = GameUI.station, b = blockAt(s.x, s.y), L = stationLayout();
     if(!b) return;
     if(CRAFT_STATIONS.includes(s.kind)){
-        // workbench (+ hand recipes), loom, cooking pot: recipe menus
-        const verb = s.kind === 'pot' ? 'Cook' : s.kind === 'loom' ? 'Weave' : 'Craft';
+        // workbench (+ hand recipes), loom...: recipe menus (see defineStation)
+        const verb = STATION_VERBS[s.kind] ?? 'Craft';
         panel(L.x, L.y, L.w, L.h, STATION_TITLES[s.kind]);
         noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text('E / Esc to close  |  Shift: craft max', L.x + L.w - 14, L.y + 13);
-        const list = s.kind === 'workbench' ? Recipe.for('hand', 'workbench') : Recipe.for(s.kind);
+        const list = Recipe.for(s.kind, ...(STATION_ALSO[s.kind] ?? []));
         drawRecipeList(L.x + 10, L.y + 38, L.w - 20, L.h - 48, list, 'station', verb, (r, shift) => craft(r, shift ? 64 : 1));
         return;
     }
-    if(s.kind === 'chest'){
-        panel(L.x, L.y, L.w, L.h, `Chest (${CHEST_SLOTS} slots)`);
+    if(b.box){
+        panel(L.x, L.y, L.w, L.h, `${STATION_TITLES[s.kind]} (${b.box.size} slots)`);
         noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text('E / Esc to close', L.x + L.w - 14, L.y + 13);
         for(let k = 0; k < b.box.size; k++){
             const cx = k % 8, cy = Math.floor(k / 8);
@@ -5645,31 +6762,32 @@ function drawStation(){
         button(L.x + L.w - 120, L.y + L.h - 26, 106, 20, 'Take all', !b.box.isEmpty, () => { b.box.emptyInto(player.inventory); }, true);
         return;
     }
-    // forge / cooking pot: input (4) -> fuel (1) -> output (2)
-    const M = MACHINES[s.kind] || MACHINES.forge, pot = s.kind === 'pot';
-    panel(L.x, L.y, L.w, L.h, STATION_TITLES[s.kind] || 'Forge');
+    // machines (forge, cooking pot, drying rack...): input -> fuel -> output (see defineStation)
+    const M = MACHINES[s.kind], rack = M.noFuel;
+    panel(L.x, L.y, L.w, L.h, STATION_TITLES[s.kind]);
     noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text('E / Esc to close', L.x + L.w - 14, L.y + 13);
     const top = L.y + 40, row = SLOT + SLOT_GAP;
     fill(200); textSize(11); textAlign(LEFT, TOP);
-    text('Input', L.x + 16, top); text('Fuel', L.x + 16 + 4 * row + 14, top); text('Output', L.x + L.w - 16 - 2 * row + SLOT_GAP, top);
-    for(let k = 0; k < b.input.size; k++) drawSlot(L.x + 16 + k * row, top + 16, slotRef(b.input, k), { hint: pot ? 'food' : 'ore' });
+    text('Input', L.x + 16, top); if(!rack) text('Fuel', L.x + 16 + 4 * row + 14, top); text('Output', L.x + L.w - 16 - 2 * row + SLOT_GAP, top);
+    for(let k = 0; k < b.input.size; k++) drawSlot(L.x + 16 + k * row, top + 16, slotRef(b.input, k), { hint: M.hint });
     const fx = L.x + 16 + 4 * row + 14;
-    drawSlot(fx, top + 16, slotRef(b.fuel, 0), { hint:'fuel', tint: b.lit ? 'rgba(255,150,46,0.25)' : null });
+    if(!rack) drawSlot(fx, top + 16, slotRef(b.fuel, 0), { hint:'fuel', tint: b.lit ? 'rgba(255,150,46,0.25)' : null });
     for(let k = 0; k < b.output.size; k++) drawSlot(L.x + L.w - 16 - 2 * row + SLOT_GAP + k * row, top + 16, slotRef(b.output, k));
     // progress + fuel bars
     const r = b.active ? Recipe.byId(b.active) : null, by = top + 16 + SLOT + 12, bw = L.w - 32;
     noStroke(); fill(255, 255, 255, 25); rect(L.x + 16, by, bw, 10, 5);
     fill('#ff9a2e'); rect(L.x + 16, by, bw * (r ? Math.min(1, b.progress / r.time) : 0), 10, 5);
-    fill(255, 255, 255, 25); rect(L.x + 16, by + 14, bw, 5, 3);
-    fill('#ffd75e'); rect(L.x + 16, by + 14, bw * (b.burnMax ? b.burn / b.burnMax : 0), 5, 3);
+    if(!rack){
+        fill(255, 255, 255, 25); rect(L.x + 16, by + 14, bw, 5, 3);
+        fill('#ffd75e'); rect(L.x + 16, by + 14, bw * (b.burnMax ? b.burn / b.burnMax : 0), 5, 3);
+    }
     const working = b.status.startsWith(M.verb);
     fill(working ? '#ffd28a' : 200); textSize(12); textAlign(LEFT, TOP);
     text(`${b.status}${r && working ? `  (${r.time.toFixed(0)}s each)` : ''}`, L.x + 16, by + 26);
     fill(150); textSize(10.5);
-    text(pot ? `Cooks one dish at a time. Meat can leave grease. Fuel burns ${POT.fuelSeconds}s per unit.`
-             : `Smelts one recipe at a time. Fuel burns ${FORGE.fuelSeconds}s per unit (coal 4, log 2, planks 1).`, L.x + 16, by + 44);
-    fill(210); textSize(12); text(pot ? 'What the cooking pot makes (a canteen in the input = water)' : 'What the forge makes', L.x + 16, by + 66);
-    drawRecipeList(L.x + 10, by + 84, L.w - 20, L.y + L.h - by - 94, Recipe.for(s.kind === 'pot' ? 'pot' : 'forge'), 'station', null, null, b.input);
+    text(M.blurb, L.x + 16, by + 44);
+    fill(210); textSize(12); text(M.listTitle, L.x + 16, by + 66);
+    drawRecipeList(L.x + 10, by + 84, L.w - 20, L.y + L.h - by - 94, Recipe.for(s.kind), 'station', null, null, b.input);
 }
 
 /**
@@ -5740,15 +6858,19 @@ function drawWheel(){
 
 function drawToasts(){
     const now = performance.now(), hb = hotbarLayout();
+    const pp = player.transform.position;
+    for(const t of GameUI.toasts) if(t.stayNear && t.until - now > 500 && Math.hypot(pp.x - t.stayNear.x, pp.y - t.stayNear.y) > 8) t.until = now + 500;   // walked away: fade out
     GameUI.toasts = GameUI.toasts.filter(t => t.until > now);
     let y = hb.y - 44 - (GameUI.inventoryOpen ? inventoryLayout().h + 26 : 0);
     if(GameUI.inventoryOpen) y = Math.max(140, y);
     textSize(13); textAlign(CENTER, CENTER);
     for(let k = GameUI.toasts.length - 1; k >= 0; k--){
-        const t = GameUI.toasts[k], a = Math.min(1, (t.until - now) / 500), w = textWidth(t.text) + 24;
-        noStroke(); fill(18, 22, 30, 210 * a); rect(width / 2 - w / 2, y - 12, w, 24, 12);
-        const c = color(t.color); c.setAlpha(255 * a); fill(c); text(t.text, width / 2, y);
-        y -= 28;
+        const t = GameUI.toasts[k], a = Math.min(1, (t.until - now) / 500), lines = String(t.text).split('\n'), n = lines.length;
+        const w = Math.max(...lines.map(s => textWidth(s))) + 24, h = 24 + (n - 1) * 17;   // '\n' starts a new line in a toast
+        noStroke(); fill(18, 22, 30, 210 * a); rect(width / 2 - w / 2, y - 12 - (n - 1) * 17, w, h, 12);
+        const c = color(t.color); c.setAlpha(255 * a); fill(c);
+        for(let j = 0; j < n; j++) text(lines[j], width / 2, y - (n - 1 - j) * 17);
+        y -= h + 4;
     }
 }
 /** Every control, shown on the HUD (right side) and in the pause menu. */
@@ -5762,6 +6884,8 @@ const CONTROLS = [
     ['F', 'eat / drink / wear / place torch'],
     ['1-7 / wheel', 'hotbar'],
     ['Esc', 'close / cancel'],
+    ['K', 'skills and upgrades'],
+    ['Shift', 'sneak (Hunter skill)'],
     ['P', 'pause'],
 ];
 function drawHelp(top = 12){
@@ -5775,7 +6899,7 @@ function drawPauseMenu(){
     noStroke(); fill(6, 8, 14, 165); rect(0, 0, width, height);
     region(0, 0, width, height, { kind:'pauseScreen' });   // nothing under the menu reacts to the mouse
     const view = GameUI.pauseView, w = 320;
-    const h = view === 'controls' ? 110 + CONTROLS.length * 20 : view === 'restart' ? 170 : 302;
+    const h = view === 'controls' ? 110 + CONTROLS.length * 20 : view === 'restart' ? 170 : 366;
     const x = Math.round(width / 2 - w / 2), y = Math.round(height / 2 - h / 2);
     panel(x, y, w, h);
     noStroke(); fill(255); textAlign(CENTER, TOP); textStyle(BOLD); textSize(22);
@@ -5794,7 +6918,7 @@ function drawPauseMenu(){
     }
     if(view === 'restart'){
         fill(215); textSize(12.5); textAlign(CENTER, TOP);
-        text('Start over in a fresh copy of the world?\nEverything in this one is lost.', x + w / 2, y + 54);
+        text(Tutorial.active ? 'Start the tutorial over?' : `Start over in a fresh copy of this world (seed ${LAUNCH.seed})?\nEverything in this one is lost.`, x + 20, y + 54, w - 40);
         const half = (bw - 10) / 2;
         button(bx, y + h - bh - 18, half, bh, 'Cancel', true, () => { GameUI.pauseView = 'main'; }, true);
         button(bx + half + 10, y + h - bh - 18, half, bh, 'Restart', true, () => location.reload(), true);
@@ -5802,12 +6926,14 @@ function drawPauseMenu(){
     }
     fill(190); textSize(12); textAlign(CENTER, TOP);
     text(`${Clock.dateText()}  -  ${Clock.timeText()}  -  Day ${Math.max(1, Clock.dayIndex - Clock.startDay + 1)}`, x + w / 2, y + 48);
-    let by = y + 76;
+    fill(140); textSize(11); text(Tutorial.active ? 'Tutorial' : `World seed: ${LAUNCH.seed}`, x + w / 2, y + 66);
+    let by = y + 92;
     const add = (label, fn) => { button(bx, by, bw, bh, label, true, fn, true); by += bh + 10; };
     add('Resume  (P)', () => setPaused(false));
     add('Controls', () => { GameUI.pauseView = 'controls'; });
     add(`Controls list on screen: ${GameUI.showHelp ? 'On' : 'Off'}`, () => { GameUI.showHelp = !GameUI.showHelp; });
     add('Restart', () => { GameUI.pauseView = 'restart'; });
+    add('Main Menu', () => relaunch(''));
     add('Return to Home Page', () => { window.location.href = 'index.html'; });   // the game picker
 }
 function itemInfoLines(item){
@@ -5878,28 +7004,680 @@ const hudLayer = {
     id: 'theaya_hud', isUI: true, scenes: [SCENE_ID], layer: 1000, _order: 1e9, deleted: false, tags: [],
     render(){
         if(!Theaya.ready) return;
+        if(!Loading.hidden) Loading.hide();   // the first frame is drawing: fade the loading screen away
         push();
         resetMatrix();
         resetDrawModes();
         GameUI.regions = [];
         textFont('sans-serif');
-        drawStats();
+        if(Menu.active){ drawMenu(); pop(); return; }
+        const statsBottom = drawStats();
         drawHotbar();
         if(GameUI.inventoryOpen) drawInventory();
         if(GameUI.station) drawStation();
         if(GameUI.wheel) drawWheel();
         drawToasts();
+        if(GameUI.skillsOpen && !GameUI.choice) drawSkills();
+        if(GameUI.choice) drawChoice();
         const clockBottom = drawClock();
         drawHelp((GameUI.calendar ? drawCalendar(clockBottom + 6) : clockBottom) + 10);
+        if(GameUI.itemMenu && GameUI.inventoryOpen) drawItemMenu();
+        if(GameUI.confirmDelete) drawConfirmDelete();
         if(GameUI.press && GameUI.press.dragging && refItem(GameUI.press.ref)){
             drawItemIcon(refItem(GameUI.press.ref), mouse.rawX, mouse.rawY, SLOT * 0.85);
         }
+        if(Tutorial.active) drawTutorial(statsBottom + 10);
         if(GameUI.paused) drawPauseMenu();
         else { drawQuickHint(); drawTooltip(); }
         pop();
     },
 };
 theayaScene.addObject(hudLayer);
+
+
+/* ---------------------------------------------------------------------
+ * 12b. Start menu + tutorial
+ *   The page opens on the start menu (Tutorial / New Game, LAUNCH above).
+ *   Choosing one sets the URL hash and reloads, so the world is generated
+ *   once, from the right seed. The tutorial is a calm copy of the
+ *   WORLD_SEED world (no hunger, thirst or monsters) with one task per
+ *   step: move, the action wheel, the inventory, then workbenches.
+ * --------------------------------------------------------------------- */
+/**
+ * The loading screen is the #loading div in world_of_theaya.html. It is on screen from the first moment the page
+ * loads (the world is generated while the page loads, which blocks drawing), it is shown again right before the page
+ * reloads for a new game / the tutorial, and it fades away on the first frame the game draws.
+ */
+const Loading = {
+    el: () => document.getElementById('loading'),
+    show(text, sub = ''){
+        const el = this.el(); if(!el) return;
+        const t = document.getElementById('loadingText'), s = document.getElementById('loadingSub');
+        if(t) t.textContent = text;
+        if(s) s.textContent = sub;
+        el.style.display = 'flex'; el.style.opacity = '1';
+    },
+    hide(){
+        const el = this.el(); if(!el || this.hidden) return;
+        this.hidden = true;
+        el.style.opacity = '0';
+        setTimeout(() => { el.style.display = 'none'; }, 400);
+    },
+};
+/** What the loading screen says while the page reloads into `hash`. */
+function loadingTextFor(hash){
+    if(hash === 'tutorial') return ['Preparing the tutorial...', 'Setting up a calm practice world'];
+    const m = /^seed=(-?\d+)$/.exec(hash);
+    if(m) return ['Generating your world...', 'Seed ' + m[1]];
+    return ['Loading...', ''];
+}
+/** Restart the page with a new URL hash ('' = back to the start menu). */
+function relaunch(hash){
+    if(Menu.launching) return;
+    Menu.launching = true;
+    Menu.hideInput();
+    Loading.show(...loadingTextFor(hash));
+    requestAnimationFrame(() => setTimeout(() => { location.hash = hash; location.reload(); }, 60));   // let the loading screen paint first
+}
+
+const Menu = {
+    active: LAUNCH.mode === 'menu',
+    view: LAUNCH.view || 'main',    // 'main' | 'new'
+    launching: false,
+    input: null,                    // the seed <input>, laid over the canvas
+    _focused: false,
+    ensureInput(){
+        if(this.input) return this.input;
+        const el = document.createElement('input');
+        el.type = 'text'; el.maxLength = 40; el.placeholder = 'Random seed'; el.autocomplete = 'off'; el.spellcheck = false;
+        el.setAttribute('aria-label', 'World seed');
+        Object.assign(el.style, {
+            position:'fixed', display:'none', zIndex:'10', boxSizing:'border-box', padding:'0 12px', textAlign:'center',
+            font:'16px sans-serif', color:'#fff', background:'#10141c', border:'1px solid rgba(255,255,255,0.35)', borderRadius:'6px', outline:'none',
+        });
+        // typing must not reach the game's key handling (E, Tab, P, number keys...)
+        for(const type of ['keydown', 'keyup', 'keypress']) el.addEventListener(type, e => e.stopPropagation());
+        el.addEventListener('keydown', e => {
+            if(e.key === 'Enter') Menu.startNew();
+            else if(e.key === 'Escape') Menu.view = 'main';
+        });
+        el.addEventListener('focus', () => { el.style.borderColor = '#8fe39a'; });
+        el.addEventListener('blur',  () => { el.style.borderColor = 'rgba(255,255,255,0.35)'; });
+        document.body.appendChild(el);
+        return this.input = el;
+    },
+    /** Show the seed box over the canvas at (x, y, w, h) in canvas pixels. */
+    placeInput(x, y, w, h){
+        const el = this.ensureInput(), cv = document.querySelector('canvas');
+        const r = cv ? cv.getBoundingClientRect() : { left:0, top:0, width, height };
+        const sx = r.width / width, sy = r.height / height;
+        Object.assign(el.style, { display:'block', left:(r.left + x * sx) + 'px', top:(r.top + y * sy) + 'px', width:(w * sx) + 'px', height:(h * sy) + 'px' });
+        if(!this._focused){ this._focused = true; el.focus(); }
+    },
+    hideInput(){ if(this.input) this.input.style.display = 'none'; this._focused = false; },
+    /** Blank seed = a random one. The seed goes in the URL, so Restart keeps the same world. */
+    startNew(){ relaunch('seed=' + parseSeed(this.input ? this.input.value : '')); },
+};
+if(Menu.active) theayaScene.pause = true;   // the world behind the menu waits
+
+function handleMenuInput(){
+    Keys.update();
+    const hit = uiHit(mouse.rawX, mouse.rawY);
+    if(Keys.pressed('mouse@left') && hit && hit.kind === 'button' && hit.enabled !== false) hit.onClick(false);
+    if(Keys.pressed('key@escape') && Menu.view === 'new') Menu.view = 'main';
+}
+
+function drawMenu(){
+    noStroke(); fill(6, 8, 14, 175); rect(0, 0, width, height);
+    region(0, 0, width, height, { kind:'pauseScreen' });   // nothing under the menu reacts to the mouse
+    const newView = Menu.view === 'new', w = 400, h = newView ? 290 : 330;
+    const x = Math.round(width / 2 - w / 2), y = Math.round(height / 2 - h / 2);
+    panel(x, y, w, h);
+    noStroke(); fill('#ffd75e'); textAlign(CENTER, TOP); textStyle(BOLD); textSize(30);
+    text('World of Theaya', x + w / 2, y + 22);
+    textStyle(NORMAL);
+    const bx = x + 40, bw = w - 80;
+    if(!newView){
+        Menu.hideInput();
+        fill(190); textSize(13); text('How would you like to begin?', x + w / 2, y + 64);
+        let by = y + 100;
+        const entry = (label, desc, fn) => {
+            button(bx, by, bw, 44, label, true, fn, true);
+            noStroke(); fill(150); textSize(11); textAlign(CENTER, TOP); text(desc, bx, by + 50, bw);
+            by += 82;
+        };
+        entry('Play the Tutorial', 'Learn to move, the action wheel, your inventory and workbenches.', () => relaunch('tutorial'));
+        entry('Start a New Game', 'Choose a world seed (or leave it blank) and set out.', () => { Menu.view = 'new'; });
+        button(bx, y + h - 52, bw, 30, 'Home Page', true, () => { window.location.href = 'index.html'; }, true);
+        return;
+    }
+    fill(190); textSize(13); text('New Game', x + w / 2, y + 64);
+    fill(225); textAlign(LEFT, TOP); text('World seed', bx, y + 92);
+    Menu.placeInput(bx, y + 114, bw, 38);
+    fill(150); textSize(11); textAlign(CENTER, TOP);
+    text('Leave it blank for a random world. Numbers and words both work: the same seed always makes the same map.', bx, y + 164, bw);
+    const half = (bw - 10) / 2;
+    button(bx, y + h - 56, half, 36, 'Back', true, () => { Menu.view = 'main'; }, true);
+    button(bx + half + 10, y + h - 56, half, 36, 'Start', true, () => Menu.startNew(), true);
+}
+
+/* ----- Tutorial ----- */
+/** The cell the mouse is over, or null. */
+const tutHover = () => areaZones.home.toCell(mouse.x, mouse.y);
+/* Screen-space highlight rectangles (the step's `focus`): { x, y, w, h } or null. */
+const tutStatRow = k => ({ x: 17, y: 20 + k * 22, w: 232, h: 20 });   // the bars in drawStats: health, hunger, thirst, xp
+function tutHotbarRect(){ const L = hotbarLayout(); return { x: L.x - 9, y: L.y - 9, w: L.w + 18, h: SLOT + 18 }; }
+function tutBackpackRect(){ const L = inventoryLayout(); return { x: L.x, y: L.y, w: L.w, h: L.h }; }
+function tutCraftRect(){ const c = inventoryLayout().craft; return c ? { x: c.x, y: c.y, w: c.w, h: c.h } : null; }
+function tutStationRect(){ const L = stationLayout(); return { x: L.x, y: L.y, w: L.w, h: L.h }; }
+/** The action wheel option (on screen this frame) whose option matches `test`. */
+function tutWheelOption(test){
+    if(!GameUI.wheel) return null;
+    const r = GameUI.regions.find(r => r.kind === 'wheelOption' && test(r.option));
+    return r ? { x: r.x, y: r.y, w: r.w, h: r.h } : null;
+}
+/** The workbench the player placed (first one found), or null. */
+function tutBench(){
+    for(let i = 0; i < Theaya.blocks.length; i++){ const b = Theaya.blocks[i]; if(b && b.id === 'workbench') return cellXY(i); }
+    return null;
+}
+/** A walkable cell 4 cells from the player that has a path. */
+function tutWalkCell(){
+    const pc = playerCell();
+    if(!pc) return null;
+    for(let dy = -4; dy <= 4; dy++) for(let dx = -6; dx <= 6; dx++){
+        const c = { x: pc.x + dx, y: pc.y + dy };
+        if(!Theaya.zone.inBounds(c.x, c.y) || hexDist(pc, c) !== 4 || !isPassable(c.x, c.y)) continue;
+        if(areaZones.home.findPath(pc, c, pathOpts())) return c;
+    }
+    return null;
+}
+/** The nearest block the player can reach whose definition passes `test`, or null. */
+function tutNearestBlock(test){
+    const pc = playerCell();
+    if(!pc) return null;
+    let best = null;
+    for(let i = 0; i < Theaya.blocks.length; i++){
+        const b = Theaya.blocks[i], def = b && Blocks.get(b.id);
+        if(!def || !test(def)) continue;
+        const c = cellXY(i), d = hexDist(pc, c);
+        if(d > 14 || (best && d >= best.d) || !findApproach(c)) continue;
+        best = { x: c.x, y: c.y, d };
+    }
+    return best;
+}
+/** The nearest fern (gathered by hand from the wheel). */
+const tutFernCell = () => tutNearestBlock(def => def.kind === 'fern');
+/** Bare grass 2-4 cells away that can be tilled. */
+function tutGrassCell(){
+    const pc = playerCell();
+    if(!pc) return null;
+    for(let dy = -4; dy <= 4; dy++) for(let dx = -5; dx <= 5; dx++){
+        const c = { x: pc.x + dx, y: pc.y + dy }, d = hexDist(pc, c);
+        if(!Theaya.zone.inBounds(c.x, c.y) || d < 2 || d > 4 || blockAt(c.x, c.y) || !isPassable(c.x, c.y) || !canTill(c.x, c.y).ok) continue;
+        return c;
+    }
+    return null;
+}
+/** The first farmland cell (that has a plant when `planted`), or null. */
+function tutFarmland(planted = false){
+    for(let i = 0; i < Theaya.blocks.length; i++){ const b = Theaya.blocks[i]; if(b && b.id === 'farmland' && (!planted || b.plant)) return cellXY(i); }
+    return null;
+}
+/** Select the hotbar slot holding this item id. */
+function tutHold(id){
+    const inv = player.inventory;
+    for(let i = 1; i <= hotbarLayout().n; i++){ const it = inv.hotbarItem(i); if(it && it.id === id){ GameUI.hotbar = i; return true; } }
+    return false;
+}
+/**
+ * Give a tool / gear / seeds straight onto the hotbar and select it. Uses the first empty hotbar slot;
+ * when the hotbar is full, the last slot's item moves to the backpack to make room.
+ */
+function tutGive(id, count = 1){
+    const inv = player.inventory, n = hotbarLayout().n;
+    let slot = 0;
+    for(let i = 1; i <= n && !slot; i++) if(!inv.hotbarItem(i)) slot = i;
+    if(!slot){
+        slot = n;
+        const old = inv.hotbarItem(slot);
+        inv.setSlot(inv.hotbarSlot(slot), null);
+        if(old && inv.give(old) !== 0) inv.setSlot(inv.hotbarSlot(slot), old);   // no room anywhere: swap isn't possible, keep it
+    }
+    if(inv.hotbarItem(slot)){ giveItems(id, count); tutHold(id); return; }
+    inv.setSlot(inv.hotbarSlot(slot), Items.create(id, count));
+    inv._changed({ event:'tutorial' });
+    GameUI.hotbar = slot;
+}
+/** A water cell for the water lesson: one within a few cells that can be reached, or a new one dug out of the grass nearby (3+ cells from farmland, so it doesn't irrigate it). */
+function tutWaterCell(){
+    const pc = playerCell();
+    if(!pc) return null;
+    const farm = tutFarmland(), farFromFarm = c => !farm || hexDist(c, farm) >= 3;
+    let best = null;
+    for(let i = 0; i < Theaya.ground.length; i++){
+        if(!isWaterCell(i) || Theaya.water[i] <= 0) continue;
+        const c = cellXY(i), d = hexDist(pc, c);
+        if(d <= 6 && (!best || d < best.d) && farFromFarm(c) && findApproach(c)) best = { x: c.x, y: c.y, d };
+    }
+    if(best) return best;
+    for(let dy = -5; dy <= 5; dy++) for(let dx = -6; dx <= 6; dx++){
+        const c = { x: pc.x + dx, y: pc.y + dy }, d = hexDist(pc, c);
+        if(!Theaya.zone.inBounds(c.x, c.y) || d < 3 || d > 5 || blockAt(c.x, c.y) || Theaya.ground[cellIndex(c.x, c.y)] !== FLOOR || !farFromFarm(c)) continue;
+        const i = cellIndex(c.x, c.y);
+        Theaya.water[i] = WATER_UNITS;
+        setGround(c.x, c.y, 'water');
+        Theaya.water[i] = WATER_UNITS;
+        if(!Theaya.waterCells.includes(i)) Theaya.waterCells.push(i);
+        Theaya.mud.delete(i); Theaya.dried.delete(i); Theaya.origin[i] = null;
+        if(!findApproach(c)){ setGround(c.x, c.y, FLOOR); Theaya.waterCells = Theaya.waterCells.filter(j => j !== i); continue; }   // walled in: undo and try the next cell
+        return c;
+    }
+    return null;
+}
+/** Move a crafted item (anywhere in the backpack) onto the hotbar and select it. The last hotbar slot swaps when it is full. */
+function tutToHotbar(id){
+    if(tutHold(id)) return true;
+    const inv = player.inventory, n = hotbarLayout().n;
+    let from = 0;
+    for(let i = 1; i <= inv.slots && !from; i++){ const it = inv[i]; if(it && it.id === id) from = i; }
+    if(!from) return false;
+    let slot = 0;
+    for(let i = 1; i <= n && !slot; i++) if(!inv.hotbarItem(i)) slot = i;
+    if(!slot) slot = n;
+    const item = inv[from], old = inv.hotbarItem(slot);
+    inv.setSlot(from, old ?? null);
+    inv.setSlot(inv.hotbarSlot(slot), item);
+    inv._changed({ event:'tutorial' });
+    GameUI.hotbar = slot;
+    return true;
+}
+/** Make sure the player has at least n of an item (a safety net in case materials were used elsewhere). 'planks' = the tutorial's planks. */
+function tutEnsure(key, n){
+    const id = key === 'planks' ? Tutorial.planks : key, have = player.inventory.countOf(id);
+    if(have < n) giveItems(id, n - have);
+}
+/** A step that has the player craft `id` at the workbench. `cost` is shown in the text, `ensure` = [[item, amount], ...] topped up on entry. */
+function tutCraftStep(id, title, cost, ensure){
+    const name = prettify(id);
+    return {
+        title,
+        text(){
+            if(GameUI.station && GameUI.station.kind === 'workbench') return `The workbench lists the ${name} (${cost}). Craft it with its Craft button.`;
+            const b = tutBench(), pc = playerCell();
+            if(!b) return 'Place a workbench first.';
+            if(!pc || hexDist(pc, b) > 1) return `Craft a ${name} (${cost}) at the workbench. Walk next to the glowing workbench, hover over it and press E.`;
+            return `Hover your mouse over the workbench and press E to open it, then craft the ${name} (${cost}).`;
+        },
+        enter(){ for(const [k, n] of ensure) tutEnsure(k, n); },
+        target: () => GameUI.station ? null : tutBench(),
+        focus: () => [GameUI.station ? tutStationRect() : null],
+        done: () => player.inventory.countOf(id) > 0,
+    };
+}
+/** Does the player carry a bucket with water in it? */
+function tutWaterBucket(){
+    const inv = player.inventory;
+    for(let i = 1; i <= inv.slots; i++){ const it = inv[i], w = it instanceof Bucket ? waterOf(it) : null; if(w && w.value > 0) return true; }
+    return false;
+}
+const tutHolding = id =>{ const h = heldItem(); return !!h && h.id === id; };
+/** A zombie to practice on, 3-5 cells away. It stands still: the tutorial world is calm. */
+function tutSpawnDummy(){
+    const pc = playerCell();
+    if(!pc) return null;
+    for(let dy = -5; dy <= 5; dy++) for(let dx = -6; dx <= 6; dx++){
+        const c = { x: pc.x + dx, y: pc.y + dy }, d = hexDist(pc, c);
+        if(!Theaya.zone.inBounds(c.x, c.y) || d < 3 || d > 5 || Mobs.occ.has(cellIndex(c.x, c.y)) || !isPassable(c.x, c.y, 'zombie')) continue;
+        return Mobs.spawn('zombie', c.x, c.y);
+    }
+    return null;
+}
+
+const Tutorial = {
+    active: LAUNCH.mode === 'tutorial',
+    step: 0,
+    flags: {},          // moved: an item was moved in the inventory
+    cell: null,         // the cell the current step points at
+    fibers: 0,          // plant fibers owned when the wheel step began
+    planks: `${logTypes[0]}_planks`,
+    /** Each step: title, text() (the instruction; may change as you progress), enter() (set up), target() (cell to highlight), done() (finished?). */
+    steps: [
+        {
+            title: 'Health',
+            manual: true,
+            focus: () => [tutStatRow(0)],
+            text: () => `The red bar (top left) is your health. It refills slowly while hunger and thirst are both at ${SURVIVAL.regenAbove} or more. Monsters, poison and starving hurt it. At 0 you wake up back at camp.`,
+        },
+        {
+            title: 'Hunger and thirst',
+            manual: true,
+            focus: () => [tutStatRow(1), tutStatRow(2)],
+            text: () => 'Hunger (orange) and thirst (blue) drain as time passes: faster when you walk, and in hot or cold weather. Food adds saturation, which drains before hunger does. Hold food or a full canteen and press F.',
+        },
+        {
+            title: 'Running low',
+            manual: true,
+            focus: () => [tutStatRow(0), tutStatRow(1), tutStatRow(2)],
+            text: () => `Below ${player.nutritionRules.hunger.threshold} hunger or ${player.nutritionRules.thirst.threshold} thirst you start losing health. Thirst hurts about twice as much, and both low together hurts more. The bars show the warning. (Drain is paused here.)`,
+        },
+        {
+            title: 'Experience',
+            manual: true,
+            focus: () => [tutStatRow(3)],
+            text: () => 'The green bar is experience. Fill it to level up, then pick a new skill or upgrade. Press K any time to see the ones you have.',
+        },
+        {
+            title: 'Moving around',
+            text: () => 'Left-click a cell and your character walks there. Walk onto the glowing cell.',
+            enter(){ Tutorial.cell = tutWalkCell(); },
+            target: () => Tutorial.cell,
+            done(){ const pc = playerCell(); return !Tutorial.cell || (pc && hexDist(pc, Tutorial.cell) === 0); },
+        },
+        {
+            title: 'The cell action wheel',
+            text: () => 'Right-click a cell to open its action wheel: every action possible there, from moving to gathering. Right-click the glowing fern.',
+            enter(){ Tutorial.cell = tutFernCell(); },
+            target: () => Tutorial.cell,
+            done(){ const w = GameUI.wheel, c = Tutorial.cell; return !c || (w && w.x === c.x && w.y === c.y); },
+        },
+        {
+            title: 'Choose an action',
+            text: () => GameUI.wheel ? 'Click "Gather plant fibers". Options marked "Walks there first" move you over by themselves. Esc closes the wheel.'
+                                     : 'The wheel closed. Right-click the glowing fern again and choose "Gather plant fibers".',
+            enter(){ Tutorial.fibers = player.inventory.countOf('plant_fiber'); },
+            target: () => Tutorial.cell,
+            focus: () => [tutWheelOption(o => /Gather/.test(o.label))],
+            done(){ return !Tutorial.cell || player.inventory.countOf('plant_fiber') > Tutorial.fibers; },
+        },
+        {
+            title: 'Your inventory',
+            text: () => 'Press Tab to open your inventory. The bottom row is the hotbar (keys 1-7 or the mouse wheel pick a slot). You found planks, plant fibers and flint: craft everything else yourself.',
+            enter(){ giveItems(Tutorial.planks, 30); giveItems('plant_fiber', 10); giveItems('flint', 2); notify('You found planks, plant fibers and flint.', '#a6f0a0'); },
+            focus: () => [tutHotbarRect(), GameUI.inventoryOpen ? tutBackpackRect() : null],
+            done: () => GameUI.inventoryOpen,
+        },
+        {
+            title: 'Moving items',
+            text: () => GameUI.inventoryOpen ? 'Drag the planks onto another slot, or click them and then click a destination slot. Shift-click sends a stack between the hotbar and the backpack.'
+                                              : 'Press Tab to open your inventory again.',
+            enter(){ Tutorial.flags.moved = false; },
+            focus: () => [GameUI.inventoryOpen ? tutBackpackRect() : null],
+            done: () => !!Tutorial.flags.moved,
+        },
+        {
+            title: 'Crafting by hand',
+            text: () => GameUI.inventoryOpen ? 'The inventory has a crafting list. Craft a Workbench (4 planks) with its Craft button.'
+                                              : 'Press Tab to open your inventory, then craft a Workbench (4 planks).',
+            focus: () => [GameUI.inventoryOpen ? tutCraftRect() : null],
+            done: () => player.inventory.countOf('workbench') > 0 || !!tutBench(),
+        },
+        {
+            title: 'Placing a workbench',
+            text: () => 'Hold the Workbench (hotbar keys 1-7 or the mouse wheel; drag it to the hotbar if it is in the backpack). Right-click an empty cell next to you and choose "Place Workbench".',
+            focus: () => [tutHotbarRect(), tutWheelOption(o => /^Place/.test(o.label))],
+            done: () => !!tutBench(),
+        },
+        {
+            title: 'Using a workbench',
+            text(){
+                const pc = playerCell(), b = tutBench();
+                if(!b) return 'Place a workbench first.';
+                if(!pc || hexDist(pc, b) > 1) return 'Workbenches only open when you are next to them. Walk up to the glowing workbench.';
+                const h = tutHover();
+                if(!h || h.x !== b.x || h.y !== b.y) return 'You are next to it. Now hover your mouse over the workbench.';
+                return 'Stand next to it, hover over it, and press E. (Right-click > "Open Workbench" works too.)';
+            },
+            target: () => tutBench(),
+            done: () => !!GameUI.station && GameUI.station.kind === 'workbench',
+        },
+        {
+            title: 'Crafting at a workbench',
+            text: () => GameUI.station ? 'The workbench lists what you can make with what you carry. Craft a Canteen (3 planks): it holds water for drinking.'
+                                       : 'Open the workbench again (stand next to it, hover it, press E) and craft a Canteen.',
+            enter(){ const n = player.inventory.countOf(Tutorial.planks); if(n < 3) giveItems(Tutorial.planks, 3 - n); },
+            target: () => GameUI.station ? null : tutBench(),
+            focus: () => [GameUI.station ? tutStationRect() : null],
+            done: () => player.inventory.countOf('canteen') > 0,
+        },
+        {
+            title: 'Crafting sticks',
+            text: () => GameUI.inventoryOpen || GameUI.station ? 'The hand crafting list turns planks into Sticks (2 planks make 4). Tools use sticks as handles: craft sticks until you hold 5 or more.'
+                                                                : 'Tools use sticks as handles. Press Tab and craft Sticks from planks until you hold 5 or more.',
+            enter(){ tutEnsure('planks', 4); },
+            focus: () => [GameUI.station ? tutStationRect() : GameUI.inventoryOpen ? tutCraftRect() : null],
+            done: () => player.inventory.countOf('stick') >= 5,
+        },
+        tutCraftStep('wooden_pickaxe', 'Crafting a pickaxe', '3 planks, 2 sticks, 2 plant fibers', [['planks', 3], ['plant_fiber', 2]]),
+        {
+            title: 'Mining',
+            text(){
+                if(!Tutorial.cell) return 'Mining: hold a pickaxe and left-click stone.';
+                return tutHolding('wooden_pickaxe') ? 'Left-click the glowing stone: you walk over and mine it. Hover a block to see how long it takes. Stone drops stone, which you can craft into tools.'
+                                                    : 'Select your Wooden Pickaxe on the hotbar (keys 1-7), then left-click the glowing stone.';
+            },
+            enter(){
+                tutToHotbar('wooden_pickaxe');
+                Tutorial.cell = tutNearestBlock(def => def.kind === 'stone');
+                Tutorial.cellId = Tutorial.cell && blockAt(Tutorial.cell.x, Tutorial.cell.y).id;
+            },
+            target: () => Tutorial.cell,
+            focus: () => [tutHolding('wooden_pickaxe') ? null : tutHotbarRect()],
+            done(){ const c = Tutorial.cell, b = c && blockAt(c.x, c.y); return !c || !b || b.id !== Tutorial.cellId; },
+        },
+        {
+            title: 'Ores and tool tiers',
+            manual: true,
+            text: () => 'Ore needs a pickaxe of a high enough tier: wood is tier 1, stone tier 2, then metals. Better tiers mine faster. Tools wear out and break, so craft spares. Mining earns XP, ore the most.',
+            focus: () => [tutHotbarRect()],
+        },
+        tutCraftStep('wooden_hoe', 'Crafting a hoe', '2 planks, 2 sticks, 2 plant fibers', [['planks', 2], ['plant_fiber', 2], ['stick', 2]]),
+        {
+            title: 'Farming: tilling',
+            text: () => tutHolding('wooden_hoe') ? 'Left-click bare grass with a hoe to till it into farmland. Click the glowing cell.'
+                                                 : 'Select your Wooden Hoe on the hotbar (keys 1-7), then left-click the glowing grass to till it into farmland.',
+            enter(){ tutToHotbar('wooden_hoe'); Tutorial.cell = tutGrassCell(); },
+            target: () => tutFarmland() || Tutorial.cell,
+            focus: () => [tutHolding('wooden_hoe') ? null : tutHotbarRect()],
+            done: () => !Tutorial.cell || !!tutFarmland(),
+        },
+        {
+            title: 'Farming: planting',
+            text(){
+                const seed = heldItem() instanceof CropSeedItem;
+                if(!seed) return 'You got some seeds. Select them on the hotbar (keys 1-7), then right-click the farmland.';
+                return GameUI.wheel ? 'Choose "Plant" in the wheel. Seeds only grow on farmland.' : 'Right-click the glowing farmland and choose "Plant". Seeds only grow on farmland.';
+            },
+            enter(){
+                const id = Crops.random(c => c.farm && c.tier <= 0 && Items.has(c.seed)) ?? Crops.ids().find(i => Crops.get(i).farm && Items.has(Crops.get(i).seed));
+                if(id){ Tutorial.seed = Crops.get(id).seed; tutGive(Tutorial.seed, 3); }
+                Tutorial.cell = tutFarmland();
+            },
+            target: () => tutFarmland(true) ? null : tutFarmland(),
+            focus: () => [heldItem() instanceof CropSeedItem ? tutWheelOption(o => /^Plant/.test(o.label)) : tutHotbarRect()],
+            done: () => !Tutorial.cell || !Tutorial.seed || !!tutFarmland(true),
+        },
+        tutCraftStep('bucket', 'Crafting a bucket', '5 planks, 3 plant fibers', [['planks', 5], ['plant_fiber', 3]]),
+        {
+            title: 'Farming: water',
+            text(){
+                if(!Tutorial.cell) return 'Crops drink water: fill a bucket at water and pour it on the farmland.';
+                if(!tutHolding('bucket')) return 'Crops drink water, or they wither. Select your Bucket on the hotbar (keys 1-7). The glowing cell is water.';
+                return GameUI.wheel ? 'Choose "Fill bucket" in the wheel. You walk to the water first.'
+                                    : 'Right-click the glowing water cell and choose "Fill bucket". (Farmland right next to water irrigates itself, no bucket needed.)';
+            },
+            enter(){
+                tutToHotbar('bucket');
+                const f = tutFarmland(true) || tutFarmland();
+                Tutorial.farm = f;
+                Tutorial.cell = tutWaterCell();
+            },
+            target: () => tutWaterBucket() ? null : Tutorial.cell,
+            focus: () => [!tutHolding('bucket') ? tutHotbarRect() : tutWheelOption(o => /^Fill/.test(o.label))],
+            done: () => !Tutorial.cell || tutWaterBucket(),
+        },
+        {
+            title: 'Farming: pour the water',
+            text(){
+                if(!tutWaterBucket() && !tutHolding('bucket')) return 'Select the Bucket on the hotbar (keys 1-7).';
+                return GameUI.wheel ? 'Choose "Water farmland" in the wheel. You walk next to it first.'
+                                    : 'Right-click the glowing farmland and choose "Water farmland". Each bucket unit adds 25 of its 100 water.';
+            },
+            enter(){ Tutorial.farm = tutFarmland(true) || tutFarmland(); Tutorial.waterBase = Tutorial.farm ? blockAt(Tutorial.farm.x, Tutorial.farm.y).water : 0; tutHold('bucket'); },
+            target: () => Tutorial.farm,
+            focus: () => [!tutHolding('bucket') ? tutHotbarRect() : tutWheelOption(o => /(Water|Flood) farmland/.test(o.label))],
+            done(){
+                const f = Tutorial.farm, b = f && blockAt(f.x, f.y);
+                return !b || b.water > Tutorial.waterBase || b.water >= FARM.waterMax;
+            },
+        },
+        {
+            title: 'Farming: harvest',
+            manual: true,
+            text: () => 'Crops ripen after a few in-game days (the seed tooltip says how many). Harvest a ripe crop by left-clicking it with a hoe of high enough tier. You get food plus seeds to replant.',
+            target: () => tutFarmland(true),
+        },
+        tutCraftStep('wooden_sword', 'Crafting a sword', '2 planks, 1 stick, 1 flint, 2 plant fibers', [['planks', 2], ['plant_fiber', 2], ['flint', 1], ['stick', 1]]),
+        {
+            title: 'Combat',
+            text(){
+                const m = Tutorial.mob;
+                if(!m) return 'Combat: hold a weapon and left-click a creature.';
+                return tutHolding('wooden_sword') ? 'Left-click the glowing zombie: you walk up and swing. Melee reaches 1 cell and a sword hits harder than fists. This zombie is a harmless training dummy.'
+                                                  : 'Select your Wooden Sword on the hotbar (keys 1-7), then left-click the glowing zombie.';
+            },
+            enter(){ tutToHotbar('wooden_sword'); Tutorial.mob = tutSpawnDummy(); },
+            target: () => Tutorial.mob && Tutorial.mob.alive ? { x: Tutorial.mob.x, y: Tutorial.mob.y } : null,
+            focus: () => [tutHolding('wooden_sword') ? null : tutHotbarRect()],
+            done: () => !Tutorial.mob || !Tutorial.mob.alive,
+        },
+        {
+            title: 'Weapons and armor',
+            manual: true,
+            text: () => 'Bows and crossbows shoot from several cells away but use arrows. Fists, swords and axes hit adjacent cells. Wear armor (shift-click it in the backpack) to take less damage; it wears down too.',
+            focus: () => [tutHotbarRect()],
+        },
+        {
+            title: 'Monsters and hunting',
+            manual: true,
+            text: () => 'Zombies appear at night and in caves; orcs are rare and strong. Torches and lit forges keep monsters away. Animals flee and drop meat: cook it in a cooking pot, raw meat can poison you. Kills give XP.',
+        },
+        {
+            title: 'Tutorial complete!',
+            text: () => 'You know the basics: stats, moving, the wheel, inventory, workbenches, mining, farming and combat. Ready for the real thing?',
+            done: () => false,
+        },
+    ],
+    get current(){ return this.steps[this.step]; },
+    begin(){
+        this.cell = null;
+        this.flags.next = false;
+        const s = this.current;
+        if(s.enter) s.enter();
+    },
+    tick(){
+        if(!this.started){ this.started = true; this.begin(); return; }   // the player is placed by now
+        const now = performance.now();
+        Mobs.fx = Mobs.fx.filter(f => now - f.t0 < f.dur);   // Mobs.tick (which does this) doesn't run in the tutorial
+        if(this.step >= this.steps.length - 1) return;
+        const s = this.current;
+        if(s.manual ? !this.flags.next : !s.done()) return;   // manual steps wait for the Next button
+        if(!s.manual) notify('Done!', '#8fe39a');
+        this.step++;
+        this.begin();
+    },
+    /** Cell to highlight for the current step. */
+    target(){ const s = this.current; return s.target ? s.target() : null; },
+    /** World overlay: a pulsing outline and a bobbing arrow over the target cell. */
+    drawWorld(){
+        const c = this.target();
+        if(!c) return;
+        const t = performance.now() / 1000, k = 0.5 + 0.5 * Math.sin(t * 5), w = Theaya.zone.toWorld(c.x, c.y);
+        cellOutline(c.x, c.y, `rgba(143,227,154,${0.55 + 0.45 * k})`, 3 + 2 * k);
+        push(); noStroke(); fill('#8fe39a');
+        const ay = w.y - 34 - 5 * k;
+        triangle(w.x - 8, ay - 10, w.x + 8, ay - 10, w.x, ay);
+        pop();
+    },
+};
+if(Tutorial.active){
+    Mobs.list = []; Mobs.occ.clear();   // a calm world: no creatures at all
+}
+
+/** Screen areas other HUD parts use right now (the tutorial panel stays out of them). */
+function tutObstacles(statsBottom){
+    const hb = tutHotbarRect();
+    const o = [
+        { x: 12, y: 12, w: 248, h: statsBottom - 12 },                 // player stats
+        { x: hb.x, y: hb.y - 34, w: hb.w, h: hb.h + 34 },              // hotbar + held item name
+        { x: width - 262, y: 12, w: 262, h: 330 },                     // clock, calendar, controls list
+    ];
+    if(GameUI.inventoryOpen){
+        const L = inventoryLayout();
+        o.push({ x: L.x, y: L.y, w: L.w, h: L.h });
+        if(L.craft) o.push({ x: L.craft.x, y: L.craft.y, w: L.craft.w, h: L.craft.h });
+    }
+    if(GameUI.station) o.push(tutStationRect());
+    if(GameUI.skillsOpen){ const n = Object.keys(Skills.defs).length, h = 66 + n * 38; o.push({ x: width / 2 - 180, y: Math.max(12, height / 2 - h / 2), w: 360, h }); }
+    return o;
+}
+/** Where the tutorial panel goes: the first free spot (left under the stats, top middle, bottom left, ...), or the least covered one. */
+function tutPanelSpot(w, h, statsBottom){
+    const obs = tutObstacles(statsBottom), pad = 10;
+    const cands = [
+        { x: 12, y: statsBottom + 10 },                                 // left, under the stats
+        { x: Math.round(width / 2 - w / 2), y: 12 },                    // top middle
+        { x: 12, y: Math.round(height - h - 12) },                      // bottom left
+        { x: Math.round(width - w - 274), y: 12 },                      // left of the clock
+    ];
+    let best = null;
+    for(const c of cands){
+        c.x = Math.max(0, Math.min(width - w, c.x)); c.y = Math.max(0, Math.min(height - h, c.y));
+        let cover = 0;
+        for(const r of obs){
+            const ox = Math.min(c.x + w + pad, r.x + r.w) - Math.max(c.x - pad, r.x);
+            const oy = Math.min(c.y + h + pad, r.y + r.h) - Math.max(c.y - pad, r.y);
+            if(ox > 0 && oy > 0) cover += ox * oy;
+        }
+        if(cover === 0) return c;
+        if(!best || cover < best.cover) best = { x: c.x, y: c.y, cover };
+    }
+    return best;
+}
+/** The tutorial panel: left side, under the player stats (`top` = y just below them); it moves aside when another part of the HUD needs the space. */
+function drawTutorial(top = 150){
+    const T = Tutorial, s = T.current, n = T.steps.length, last = T.step === n - 1;
+    // highlight what the step is about (pulsing green box, on top of the HUD)
+    const k = 0.5 + 0.5 * Math.sin(performance.now() / 200);
+    for(const r of (s.focus ? s.focus() : [])){
+        if(!r) continue;
+        noStroke(); fill(143, 227, 154, 22 + 28 * k); rect(r.x - 3, r.y - 3, r.w + 6, r.h + 6, 8);
+        noFill(); stroke(143, 227, 154, 150 + 105 * k); strokeWeight(2 + 1.5 * k); rect(r.x - 3, r.y - 3, r.w + 6, r.h + 6, 8);
+    }
+    const w = 330, h = last ? 240 : 226;
+    const at = tutPanelSpot(w, h, top - 10);
+    // glide to the spot (it moves when the inventory etc. opens) instead of jumping
+    const P = T.pos || (T.pos = { x: at.x, y: at.y });
+    P.x += (at.x - P.x) * 0.25; P.y += (at.y - P.y) * 0.25;
+    if(Math.abs(at.x - P.x) < 0.5) P.x = at.x;
+    if(Math.abs(at.y - P.y) < 0.5) P.y = at.y;
+    const x = Math.round(P.x), y = Math.round(P.y);
+    panel(x, y, w, h);
+    noStroke(); textAlign(LEFT, TOP);
+    fill('#8fe39a'); textSize(12); textStyle(BOLD); text(`TUTORIAL  ${T.step + 1} / ${n}`, x + 14, y + 11);
+    fill(255); textSize(19); text(s.title, x + 14, y + 28);
+    textStyle(NORMAL); fill(230); textSize(14.5); text(s.text(), x + 14, y + 58, w - 28, 126);
+    const pw = (w - 28 - (n - 1) * 3) / n;
+    for(let k = 0; k < n; k++){ fill(k < T.step ? '#8fe39a' : k === T.step ? '#ffd75e' : 'rgba(255,255,255,0.18)'); rect(x + 14 + k * (pw + 3), y + h - 10, pw, 4, 2); }
+    if(last){
+        const bw = (w - 28 - 10) / 2;
+        button(x + 14, y + h - 52, bw, 32, 'Start a New Game', true, () => relaunch('new'), true);
+        button(x + 24 + bw, y + h - 52, bw, 32, 'Keep Exploring', true, () => { T.active = false; Mobs.repopulate(true); }, true);
+    } else {
+        button(x + 14, y + h - 36, 92, 20, 'Skip tutorial', true, () => relaunch(''), true);
+        if(s.manual) button(x + w - 94, y + h - 38, 80, 24, 'Next', true, () => { T.flags.next = true; }, true);
+    }
+}
 
 
 /* ---------------------------------------------------------------------

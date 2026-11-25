@@ -15,9 +15,22 @@
     
     <link rel="stylesheet" type="text/css" href="style.css">
     <meta charset="utf-8" />
-    <title>World of Theaya - MALE Engine</title>
+    <title>World of Theaya v0.2.0 - MALE Engine</title>
   </head>
   <body>
+    <!-- Loading screen: visible as soon as the page starts, shown again before a new game / tutorial reloads the page (see Loading in world_of_theaya.js) -->
+    <div id="loading" style="position:fixed;inset:0;z-index:1000;background:#0b0e15;color:#e8e8e8;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;transition:opacity .35s">
+      <style>@keyframes theayaSpin{to{transform:rotate(360deg)}}</style>
+      <div style="font-size:30px;font-weight:bold;color:#ffd75e;margin-bottom:26px">World of Theaya</div>
+      <div style="width:46px;height:46px;border:5px solid rgba(255,255,255,.18);border-top-color:#8fe39a;border-radius:50%;animation:theayaSpin .9s linear infinite"></div>
+      <div id="loadingText" style="margin-top:22px;font-size:15px;color:#bbb">Loading...</div>
+      <div id="loadingSub" style="margin-top:8px;font-size:12px;color:#777"></div>
+    </div>
+    <script>
+      (function(){ var h = (location.hash || "").replace(/^#/, ""), t = document.getElementById("loadingText"), s = document.getElementById("loadingSub");
+        if(h === "tutorial"){ t.textContent = "Preparing the tutorial..."; s.textContent = "Setting up a calm practice world"; }
+        else if(/^seed=/.test(h)){ t.textContent = "Generating your world..."; s.textContent = "Seed " + h.slice(5); } })();
+    </script>
     <main>
     </main>
 
