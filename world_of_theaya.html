@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <meta charset="utf-8" />
     <!--
       Local p5.js copies so this page runs directly from disk
       (file://) without needing an internet connection.
@@ -14,22 +15,39 @@
     
     
     <link rel="stylesheet" type="text/css" href="style.css">
-    <meta charset="utf-8" />
     <title>World of Theaya v0.2.0 - MALE Engine</title>
+    <!-- Every on-screen text of the game, per language (plain data; the loading screen below reads it too) -->
+    <script src="world_of_theaya_text.js?v=0.2.0" charset="utf-8"></script>
   </head>
   <body>
     <!-- Loading screen: visible as soon as the page starts, shown again before a new game / tutorial reloads the page (see Loading in world_of_theaya.js) -->
     <div id="loading" style="position:fixed;inset:0;z-index:1000;background:#0b0e15;color:#e8e8e8;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;transition:opacity .35s">
       <style>@keyframes theayaSpin{to{transform:rotate(360deg)}}</style>
-      <div style="font-size:30px;font-weight:bold;color:#ffd75e;margin-bottom:26px">World of Theaya</div>
+      <div id="loadingTitle" style="font-size:30px;font-weight:bold;color:#ffd75e;margin-bottom:26px"></div>
       <div style="width:46px;height:46px;border:5px solid rgba(255,255,255,.18);border-top-color:#8fe39a;border-radius:50%;animation:theayaSpin .9s linear infinite"></div>
-      <div id="loadingText" style="margin-top:22px;font-size:15px;color:#bbb">Loading...</div>
+      <div id="loadingText" style="margin-top:22px;font-size:15px;color:#bbb"></div>
       <div id="loadingSub" style="margin-top:8px;font-size:12px;color:#777"></div>
     </div>
     <script>
-      (function(){ var h = (location.hash || "").replace(/^#/, ""), t = document.getElementById("loadingText"), s = document.getElementById("loadingSub");
-        if(h === "tutorial"){ t.textContent = "Preparing the tutorial..."; s.textContent = "Setting up a calm practice world"; }
-        else if(/^seed=/.test(h)){ t.textContent = "Generating your world..."; s.textContent = "Seed " + h.slice(5); } })();
+      // The loading screen's text (THEAYA_TEXT 'loading.*'), before the engine runs: the language saved in
+      // Settings (world_of_theaya.js section 0), else the browser's (Japanese if it prefers it), else English.
+      (function(){
+        var lang = null;
+        try { lang = JSON.parse(localStorage.getItem("theaya.settings") || "{}").language || null; } catch(e){}
+        if(!lang){   // like world.language: the first of the browser's languages the game has
+          var langs = navigator.languages || [navigator.language || ""];
+          for(var i = 0; i < langs.length && !lang; i++){ var b = String(langs[i]).toLowerCase().split("-")[0]; lang = b === "ja" ? "japanese" : b === "en" ? "english" : null; }
+        }
+        lang = lang || "english";
+        function tx(key, vars){ var e = THEAYA_TEXT[key] || {}, s = String(e[lang] || e.english || ""); for(var k in (vars || {})) s = s.split("{" + k + "}").join(vars[k]); return s; }
+        var h = (location.hash || "").replace(/^#/, "");
+        document.getElementById("loadingTitle").textContent = tx("loading.title");
+        var t = tx("loading.loading"), s = "";
+        if(h === "tutorial"){ t = tx("loading.tutorial"); s = tx("loading.tutorialSub"); }
+        else if(/^seed=/.test(h)){ t = tx("loading.world"); s = tx("loading.seed", { seed: h.slice(5) }); }
+        document.getElementById("loadingText").textContent = t;
+        document.getElementById("loadingSub").textContent = s;
+      })();
     </script>
     <main>
     </main>

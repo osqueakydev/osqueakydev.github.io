@@ -306,6 +306,43 @@ class World {
     static get players()      { return World.active ? World.active.players      : []; }
     static get gyroKeyboard() { return World.active ? World.active.gyroKeyboard : undefined; }
     static get debugMode()    { return World.active ? World.active.debugMode    : false; }
+    static get language()     { return World.active ? World.active.language     : 'english'; }
+
+    // ---------- Language helpers (static, no instance needed) ----------
+
+    /**
+     * Turns a language code or name into the lowercase English name the engine
+     * uses: 'en-US' -> 'english', 'es' -> 'spanish', 'Japanese' -> 'japanese'.
+     * Anything that isn't a 2-3 letter code is treated as a name already.
+     */
+    static languageName(tag) {
+        if (tag == null) return '';
+        const str = String(tag).trim();
+        const base = str.split(/[-_]/)[0].toLowerCase();
+        if (!/^[a-z]{2,3}$/.test(base)) return str.toLowerCase();
+        if (!World._langNameCache) World._langNameCache = {};
+        if (World._langNameCache[base]) return World._langNameCache[base];
+        let name = World._LANG_NAMES[base] || '';
+        if (!name) {
+            try {
+                const n = new Intl.DisplayNames(['en'], { type: 'language' }).of(base);
+                if (n && n.toLowerCase() !== base) name = n.toLowerCase();
+            } catch (e) { /* old browser: fall through to the bare code */ }
+        }
+        return (World._langNameCache[base] = name || base);
+    }
+
+    /** The browser's language preferences as engine names, most preferred first, no repeats. */
+    static detectLanguages() {
+        const nav = typeof navigator !== 'undefined' ? navigator : {};
+        const tags = (nav.languages && nav.languages.length) ? nav.languages : [nav.language];
+        const out = [];
+        tags.forEach(t => {
+            const n = World.languageName(t);
+            if (n && !out.includes(n)) out.push(n);
+        });
+        return out;
+    }
     objects(returner)   {
         if(!World.active)   return false;
         switch(returner){
@@ -396,6 +433,27 @@ class World {
         this._running = false;
         this._initialized = false;
 
+        // ---- Background / focus (see _startBackgroundTimer, _watchFocus) ----
+        // What the game does when the player looks away. Each is 'run' or 'pause':
+        //   whenHidden:    the tab is hidden (switched tabs, minimized the browser).
+        //                  'run' keeps real ticks going (driven by a Worker timer).
+        //   whenUnfocused: the page is still showing but another program has focus.
+        // 'pause' freezes ticks (game time, scene.time, physics) until the player is back;
+        // nothing is caught up afterwards. Changing either takes effect right away.
+        this.whenHidden = 'run';
+        this.whenUnfocused = 'run';
+        this.backgroundFps = 0;        // renders per second while hidden and running (0 = none: nobody can see them)
+        this.backgroundCatchUp = 60;   // most seconds of game time one background step may run, if the browser stalls the timer
+        this.backgroundTimer = 'none'; // what drives hidden-tab ticks: 'worker' (steady), 'interval' (throttled backup) or 'none'
+        this.hidden = typeof document !== 'undefined' && !!document.hidden;
+        this.focusLost = false;        // true while the browser window is out of focus (page still showing)
+        this.onHidden = null;          // () => {}  the tab was hidden
+        this.onShown = null;           // () => {}  the tab is showing again
+        this.onFocusLost = null;       // () => {}  the window lost focus (not a tab switch): e.g. open a pause menu
+        this.onFocusGained = null;     // () => {}  the window got focus back
+        this._bgTimer = null;
+        this._lastFrameAt = 0;
+
         // Debug mode enables developer tools such as the DevConsole
         // (backtick to open). Off by default; see setDebugMode().
         this.debugMode = false;
@@ -430,6 +488,10 @@ class World {
         // ---- Per-instance defaults ----
         // Built fresh so instances never share nested references.
         this.defaults = World._makeDefaults();
+
+        // ---- Dialog table (see addDialog / getText) ----
+        // { key: { english: 'Hello', spanish: 'Hola' }, ... }
+        this.dialog = {};
 
         // ---- Time conversion helpers (bound to this instance) ----
         this.msToTicks = (ms) => ms / this.tickLength;
@@ -469,6 +531,19 @@ class World {
                 terminalVelocity: 2000,
             },
             input: { device: 'keyboard', style: 'gyro' },
+            // Language. Names are lowercase English names ('english', 'spanish', ...);
+            // codes like 'es' or 'pt-BR' are accepted anywhere and turned into names.
+            //   user:   the player's languages, most preferred first (from the browser;
+            //           world.setLanguage(name) moves a choice to the front)
+            //   system: what the game ships. world.language is the first user language
+            //           in `supported`, otherwise `default`.
+            lang: {
+                user: World.detectLanguages(),
+                system: {
+                    supported: [],
+                    default: 'english',
+                },
+            },
             binds: {
                 left:  { keyboard: 'a', controller: 'stick@left:x', mobile:'drag@x' },
                 right: { keyboard: 'd', controller: 'stick@left:x', mobile:'drag@x' },
@@ -629,19 +704,40 @@ class World {
         let tickRateTimer = 0;
         let ticksThisSecond = 0;
 
-        const gameLoop = (currentTime) => {
+        /*
+         * One step of the loop: the ticks that are due, then (when `draw`) a render.
+         * requestAnimationFrame drives it while the tab is visible. Browsers stop rAF in a
+         * hidden tab, so the background timer (see _startBackgroundTimer) drives it there:
+         * the game keeps running, rendering only `backgroundFps` times a second (function
+         * scene scripts run on renders, so they keep going too, just slower).
+         */
+        const step = (currentTime, draw) => {
             if (this.paused) {
-                // Keep the rAF chain alive but skip all work.
-                this._rafHandle = requestAnimationFrame(gameLoop);
                 lastTime = currentTime;
                 return;
             }
+            // Paused by whenHidden / whenUnfocused: no ticks, and the time away is
+            // dropped (lastTime keeps moving) so nothing is caught up on return.
+            // A visible page keeps rendering, so a pause overlay or menu still draws.
+            if (this.autoPaused) {
+                lastTime = currentTime;
+                this._tickAccumulator = 0;
+                if (draw && !document.hidden) {
+                    if (typeof Scene !== 'undefined' && Scene.render) Scene.render();
+                    if (typeof DevConsole !== 'undefined') DevConsole.render();
+                }
+                return;
+            }
 
-            fpsTracker.tick();
+            if (draw) fpsTracker.tick();
             if (this.gyroKeyboard) this.gyroKeyboard.update();
 
             let deltaTime = (currentTime - lastTime) / 1000;
-            if (deltaTime > 0.25) deltaTime = 0.25;
+            // A hidden tab's timer can be throttled (to 1/s or slower without a Worker):
+            // let it catch up more time per step there, so the game doesn't fall behind.
+            const maxDelta = document.hidden ? this.backgroundCatchUp : 0.25;
+            if (deltaTime > maxDelta) deltaTime = maxDelta;
+            if (deltaTime < 0) deltaTime = 0;
             lastTime = currentTime;
 
             rectMode(CENTER);
@@ -734,21 +830,138 @@ class World {
             }
 
             // ---- Render (every frame) ----
-            if (typeof Scene !== 'undefined' && Scene.render) {
-                Scene.render();
+            if (draw) {
+                if (typeof Scene !== 'undefined' && Scene.render) {
+                    Scene.render();
+                }
+                // Console + panels draw last, in screen space, on top of the scene.
+                if (typeof DevConsole !== 'undefined') DevConsole.render();
             }
-            // Console + panels draw last, in screen space, on top of the scene.
-            if (typeof DevConsole !== 'undefined') DevConsole.render();
 
             this.currentTime = (performance.now() - this.startTime);
             this.time = this.currentTime / 1000;
             this.ping = Math.floor(performance.now() - (this.currentTime + this.startTime));
             this.getPing();
+        };
+        this._step = step;
+        // Restarts the clock from now: the next step runs no ticks for the time before it.
+        this._resetClock = () => { lastTime = performance.now(); this._tickAccumulator = 0; };
 
+        const gameLoop = (currentTime) => {
+            this._lastFrameAt = performance.now();
+            step(currentTime, true);
             this._rafHandle = requestAnimationFrame(gameLoop);
         };
 
         this._rafHandle = requestAnimationFrame(gameLoop);
+        this._startBackgroundTimer();
+        this._watchFocus();
+    }
+
+    /** True while whenHidden / whenUnfocused is holding the game still. */
+    get autoPaused() {
+        if (this.hidden) return this.whenHidden === 'pause';
+        return this.focusLost && this.whenUnfocused === 'pause';
+    }
+
+    /** Older name for whenHidden: true = 'run', false = 'pause'. */
+    get runInBackground() { return this.whenHidden !== 'pause'; }
+    set runInBackground(v) { this.whenHidden = v ? 'run' : 'pause'; }
+
+    /**
+     * Keeps the game running in a hidden tab (rAF doesn't fire there). A Web Worker's
+     * timer isn't throttled like the page's, so it sends a step every tickLength ms
+     * and the game runs tick by tick in real time (world.backgroundTimer = 'worker').
+     * setInterval runs alongside as a backup for browsers that refuse the worker; the
+     * browser slows it to once a second (once a minute in Chrome after 5 minutes), so
+     * each of its steps runs the ticks it missed, up to backgroundCatchUp seconds.
+     */
+    _startBackgroundTimer() {
+        if (this._bgTimer) return;
+        let lastRender = 0;
+        const onTimer = (fromWorker) => {
+            if (fromWorker === true) this.backgroundTimer = 'worker';
+            if (!this._running) return;
+            const now = performance.now();
+            // only when rAF isn't running (hidden tab, or rAF stalled for a while)
+            if (!document.hidden && now - (this._lastFrameAt || 0) < 250) return;
+            const fps = this.backgroundFps;
+            // draw only in a hidden tab: a visible page with slow frames keeps rAF for drawing (no extra renders on top)
+            const draw = document.hidden && fps > 0 && now - lastRender >= 1000 / fps;
+            if (draw) lastRender = now;
+            this._step(now, draw);
+        };
+        // setInterval always runs as a backup (a worker can fail silently on some browsers).
+        // Calling step from both is harmless: it advances by the time passed, not per call.
+        const intervalId = setInterval(onTimer, this.tickLength);
+        this.backgroundTimer = 'interval';
+        let worker = null;
+        try {
+            const src = 'let h=null;onmessage=e=>{clearInterval(h);if(e.data>0)h=setInterval(()=>postMessage(0),e.data);};';
+            const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+            worker = new Worker(url);
+            setTimeout(() => URL.revokeObjectURL(url), 10000);   // not right away: the worker loads it asynchronously
+            worker.onmessage = () => onTimer(true);
+            worker.onerror = (e) => {   // a browser that won't run it: the setInterval backup carries on
+                if (e && e.preventDefault) e.preventDefault();
+                worker.terminate();
+                worker = null;
+                this.backgroundTimer = 'interval';
+            };
+            worker.postMessage(this.tickLength);
+        } catch (e) {
+            worker = null;
+        }
+        this._bgTimer = {
+            stop: () => {
+                clearInterval(intervalId);
+                if (worker) worker.terminate();
+                worker = null;
+                this.backgroundTimer = 'none';
+            },
+        };
+    }
+
+    /**
+     * Tracks where the player is looking, for whenHidden / whenUnfocused:
+     *  - the tab hidden or shown (visibilitychange): world.hidden, onHidden / onShown
+     *  - the browser WINDOW losing focus while the page is still showing (clicking
+     *    another program): world.focusLost, onFocusLost / onFocusGained.
+     *    Switching tabs does NOT count as losing focus; it counts as hidden.
+     * Coming back from a pause restarts the clock, so the time away isn't caught up.
+     */
+    _watchFocus() {
+        if (this._focusWatched) return;
+        this._focusWatched = true;
+        this.focusLost = false;
+        this.hidden = !!document.hidden;
+
+        // run `change`, and restart the clock if that ended an automatic pause
+        const update = (change) => {
+            const was = this.autoPaused;
+            change();
+            if (was && !this.autoPaused && this._resetClock) this._resetClock();
+        };
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden === this.hidden) return;
+            update(() => { this.hidden = document.hidden; });
+            const hook = this.hidden ? this.onHidden : this.onShown;
+            if (typeof hook === 'function') hook();
+        });
+        window.addEventListener('blur', () => {
+            // a tab switch also blurs the window, then hides the page: wait a moment and check
+            setTimeout(() => {
+                if (document.hidden || document.hasFocus() || this.focusLost) return;
+                update(() => { this.focusLost = true; });
+                if (typeof this.onFocusLost === 'function') this.onFocusLost();
+            }, 60);
+        });
+        window.addEventListener('focus', () => {
+            if (!this.focusLost) return;
+            update(() => { this.focusLost = false; });
+            if (typeof this.onFocusGained === 'function') this.onFocusGained();
+        });
     }
 
     // ==================== PER-INSTANCE METHODS ====================
@@ -770,6 +983,8 @@ class World {
         this._running = false;
         if (this._rafHandle) cancelAnimationFrame(this._rafHandle);
         this._rafHandle = null;
+        if (this._bgTimer) this._bgTimer.stop();
+        this._bgTimer = null;
 
         if (World._instances) {
             const idx = World._instances.indexOf(this);
@@ -840,6 +1055,97 @@ class World {
     }
 
 
+    // ==================== LANGUAGE / DIALOG ====================
+
+    /**
+     * The language text is shown in: the first of defaults.lang.user that is in
+     * defaults.lang.system.supported, otherwise defaults.lang.system.default.
+     */
+    get language() {
+        const lang = this.defaults.lang;
+        const supported = lang.system.supported.map(l => World.languageName(l));
+        for (const l of lang.user) {
+            const n = World.languageName(l);
+            if (supported.includes(n)) return n;
+        }
+        return World.languageName(lang.system.default);
+    }
+
+    /** Declares the languages the game has text for: world.setSupportedLanguages('english', 'es'). */
+    setSupportedLanguages(...langs) {
+        this.defaults.lang.system.supported = langs.flat().map(l => World.languageName(l));
+        return this;
+    }
+
+    /**
+     * Makes `name` the player's first choice (e.g. from a settings menu). If the game
+     * doesn't support it, world.language keeps falling back as usual.
+     */
+    setLanguage(name) {
+        const n = World.languageName(name);
+        if (!n) return this;
+        const user = this.defaults.lang.user;
+        const i = user.indexOf(n);
+        if (i > -1) user.splice(i, 1);
+        user.unshift(n);
+        if (!this.defaults.lang.system.supported.map(l => World.languageName(l)).includes(n)) {
+            console.warn(`Language "${n}" isn't in defaults.lang.system.supported; using "${this.language}".`);
+        }
+        return this;
+    }
+
+    /**
+     * Adds dialog entries, keyed by language name or code:
+     *   world.addDialog('greet', { english: 'Hello, {name}!', es: '¡Hola, {name}!' })
+     *   world.addDialog({ greet: {...}, bye: {...} })
+     * Adding to an existing key merges the languages.
+     */
+    addDialog(key, entries) {
+        if (key && typeof key === 'object') {
+            for (const k in key) this.addDialog(k, key[k]);
+            return this;
+        }
+        const target = this.dialog[key] || (this.dialog[key] = {});
+        if (typeof entries === 'string') entries = { [this.defaults.lang.system.default]: entries };
+        for (const l in entries) target[World.languageName(l)] = entries[l];
+        return this;
+    }
+
+    /**
+     * The text for the current language. `entry` is a dialog key, or an inline
+     * { english: ..., spanish: ... } object. Falls back to the default language,
+     * then to any language the entry has. An unknown key returns the key itself,
+     * so missing text shows up on screen instead of vanishing.
+     * `vars` fills {placeholders}: world.getText('greet', { name: 'Theaya' }).
+     */
+    getText(entry, vars) {
+        let table = entry;
+        if (typeof entry === 'string') {
+            table = this.dialog[entry];
+            if (table == null) return World._fillText(entry, vars);
+        }
+        if (table == null) return '';
+        if (typeof table !== 'object') return World._fillText(String(table), vars);
+
+        const want = this.language;
+        const def = World.languageName(this.defaults.lang.system.default);
+        let fallback;
+        let found;
+        for (const k in table) {
+            const n = World.languageName(k);
+            if (n === want) { found = table[k]; break; }
+            if (n === def && fallback === undefined) fallback = table[k];
+        }
+        if (found === undefined) found = fallback;
+        if (found === undefined) found = Object.values(table)[0];
+        return World._fillText(found == null ? '' : String(found), vars);
+    }
+
+    static _fillText(str, vars) {
+        if (!vars) return str;
+        return str.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m));
+    }
+
     writeBind(type,obj){
         const bs = World.defaults.binds;
         if(bs[type]){
@@ -850,3 +1156,13 @@ class World {
     }
 
 }
+
+// Common codes -> engine language names. Other codes use Intl.DisplayNames when available.
+World._LANG_NAMES = {
+    en: 'english', es: 'spanish', fr: 'french', de: 'german', it: 'italian',
+    pt: 'portuguese', nl: 'dutch', ru: 'russian', uk: 'ukrainian', pl: 'polish',
+    ja: 'japanese', zh: 'chinese', ko: 'korean', ar: 'arabic', hi: 'hindi',
+    tr: 'turkish', sv: 'swedish', no: 'norwegian', nb: 'norwegian', da: 'danish',
+    fi: 'finnish', el: 'greek', he: 'hebrew', id: 'indonesian', th: 'thai',
+    vi: 'vietnamese', tl: 'tagalog', fil: 'filipino', haw: 'hawaiian',
+};

@@ -1,10 +1,112 @@
 var world;
 function setup(){
     world = new World(20);
+    world.whenHidden = 'run';      // tab switched / browser minimized: 'run' keeps the game going, 'pause' freezes it
+    world.whenUnfocused = 'run';   // another program focused, game still showing: 'run' or 'pause'
     world.camera.link(player);   // the World of Theaya game is set up further down this file
+    // Languages: every on-screen text is in THEAYA_TEXT (world_of_theaya_text.js), see section 0
+    world.setSupportedLanguages(LANGUAGES.map(l => l.id));
+    world.addDialog(THEAYA_TEXT);
+    if(Settings.data.language) world.setLanguage(Settings.data.language);   // the player's choice (Settings), else the browser's language
 }
 
 //world.writeBind('interact',{ keyboard:'e', controller: '' });
+
+/* ---------------------------------------------------------------------
+ * 0. Text + language
+ *   All on-screen text lives in world_of_theaya_text.js:
+ *     THEAYA_TEXT   key -> { english, japanese }   ({name} placeholders get filled in)
+ *     THEAYA_NAMES  element / biome / weather id -> { english?, japanese }
+ *     THEAYA_WORDS  word -> japanese, for names built from ids ('iron_pickaxe' -> 鉄のツルハシ)
+ *   T(key, vars)  the text in the current language (World language system: world.getText)
+ *   nameOf(id)    the display name of an item, block, creature, skill, biome, weather...
+ *   The language is chosen in Settings (pause menu > Settings) and saved in localStorage.
+ *   To add a language: add it to LANGUAGES and give every THEAYA_TEXT entry that key.
+ * --------------------------------------------------------------------- */
+const LANGUAGES = [
+    { id:'english',  label:'English' },
+    { id:'japanese', label:'日本語' },
+];
+/** The current language id ('english' | 'japanese'). */
+function currentLanguage(){
+    if(World.active) return World.active.language;
+    const saved = Settings.data.language;
+    return LANGUAGES.some(l => l.id === saved) ? saved : 'english';
+}
+const _missingText = new Set();
+/** On-screen text by key, in the current language: T('inv.full'), T('farm.planted', { crop, n }). */
+function T(key, vars){
+    const w = World.active;
+    if(w && w.dialog && w.dialog[key]) return w.getText(key, vars);
+    const e = THEAYA_TEXT[key];
+    if(e == null){
+        if(!_missingText.has(key)){ _missingText.add(key); console.warn(`T: no text for '${key}' (add it to world_of_theaya_text.js)`); }
+        return World._fillText(String(key), vars);
+    }
+    return World._fillText(String(e[currentLanguage()] ?? e.english ?? ''), vars);
+}
+/** English names that aren't just the prettified id ('hydration' -> 'Well Hydrated'), filled in by the element definitions. */
+const ENGLISH_NAMES = {};
+/** Japanese words for the parts of generated ids; see nameOf. */
+function _jaWord(w){ const v = THEAYA_WORDS[w]; return v == null ? prettify(w) : v; }
+/**
+ * Display name of any id (item, block, creature, skill, biome, weather, season, month...).
+ * English: its defined name, else the prettified id. Japanese: THEAYA_NAMES, else built from
+ * THEAYA_WORDS: '<material>_<thing>' -> '<material>の<thing>', 'raw_<metal>' -> '<metal>の原石',
+ * '<metal>_ore' -> '<metal>鉱石', 'wild_<crop>' -> '野生の<crop>', '<crop>_seeds' -> '<crop>の種'.
+ */
+function nameOf(id){
+    if(id == null) return '';
+    id = String(id);
+    const fixed = THEAYA_NAMES[id];
+    if(currentLanguage() === 'english') return (fixed && fixed.english) || ENGLISH_NAMES[id] || prettify(id);
+    if(fixed && fixed.japanese) return fixed.japanese;
+    if(THEAYA_WORDS[id] != null) return THEAYA_WORDS[id];   // a whole word, even with an underscore ('sugar_cane')
+    const parts = id.split('_');
+    if(parts.length === 1) return _jaWord(id);
+    if(parts[0] === 'raw' && THEAYA_WORDS[parts.slice(1).join('_')] && materialList[parts.slice(1).join('_')]) return `${_jaWord(parts.slice(1).join('_'))}の原石`;
+    // the longest known first part (materials like galvanized_steel are two words)
+    for(let k = parts.length - 1; k >= 1; k--){
+        const head = parts.slice(0, k).join('_'), tail = parts.slice(k).join('_');
+        if(THEAYA_WORDS[head] == null) continue;
+        if(tail === 'ore') return `${_jaWord(head)}鉱石`;
+        if(tail === 'ore_heart') return `${_jaWord(head)}の鉱脈核`;
+        return `${_jaWord(head)}の${THEAYA_NAMES[tail] && THEAYA_NAMES[tail].japanese || (THEAYA_WORDS[tail] != null ? THEAYA_WORDS[tail] : parts.slice(k).map(_jaWord).join(''))}`;
+    }
+    return parts.map(_jaWord).join('');
+}
+/**
+ * A station's text (verb, idle, hint, blurb, listTitle): THEAYA_TEXT 'station.<station>.<field>' when the
+ * game has one, else `own` (a spec's own text, for added stations), else the generic key.
+ */
+function stationText(station, field, own, genericKey, vars){
+    const k = `station.${station}.${field}`;
+    if(THEAYA_TEXT[k]) return T(k, vars);
+    if(own != null) return World._fillText(String(own), vars);
+    return genericKey ? T(genericKey, vars) : '';
+}
+/** Turns a definition's `name` into a getter that follows the language (custom English names are kept in ENGLISH_NAMES). */
+function translatedName(obj, id){
+    const en = obj.name;
+    if(en && en !== prettify(id) && !ENGLISH_NAMES[id]) ENGLISH_NAMES[id] = en;
+    Object.defineProperty(obj, 'name', { get: () => nameOf(id), set(v){ ENGLISH_NAMES[id] = v; }, enumerable: true, configurable: true });
+    return obj;
+}
+
+/** Player settings (pause menu > Settings), kept between visits (the page reloads for a new game). */
+const Settings = {
+    storageKey: 'theaya.settings',
+    data: { language: null },
+    load(){ try{ Object.assign(this.data, JSON.parse(localStorage.getItem(this.storageKey) || '{}')); } catch(e){ /* private mode / file:// without storage */ } },
+    save(){ try{ localStorage.setItem(this.storageKey, JSON.stringify(this.data)); } catch(e){} },
+    setLanguage(id){
+        this.data.language = id;
+        this.save();
+        if(World.active) World.active.setLanguage(id);
+        if(typeof Theaya !== 'undefined' && Theaya) Theaya.fullRedraw = true;   // the map has a few drawn labels
+    },
+};
+Settings.load();
 
 
 
@@ -169,7 +271,7 @@ const __customDefine = {
     stack:100,
     //any item/block or resource that can be in the inventory
     tags:[], //craft/workbench tags
-
+    texture:'', //can be an array
     //for elements that are blocks or terrian (terrian is a block that can spawn naturally)
         tier:1, //tier tool needed to break, tier of -1 is unbreakable
         tool:'axe', //type of tool needed
@@ -221,6 +323,7 @@ const __customDefine = {
             blocked = cell has block, nothing can pass
         */
     //include texture color properties to be able to set the color texture of the game element
+    texture:'', //optional image path (or { src, states, canopy, scale, ... }, see "3a. Textures"); leave it out to keep the built-in look
 
     //food
         hunger:0,
@@ -453,7 +556,7 @@ const naturalMaterials = {
             tool:'hoe', 
         },
         dirt:{
-            hardness:1,
+            hardness:0.1,
             tier:0,
             tool:'shovel'
         },
@@ -805,8 +908,12 @@ const FARM = {
     floodAt: 3,           // ...and above this many times waterMax...
     floodDays: 0.5,       // ...for this long (half a day = 7.5 min) it turns into a water source
     overflowDrain: 40,    // water above waterMax soaks away this much faster per in game day
-    maxStack: 5,          // most crops one farmland cell can grow at once (plant more seeds on a young crop)
-    stackThirst: 0.5,     // each extra crop in a stack makes the cell drink this much more (x1 + 0.5 per extra)
+    slots: 5,             // seedling slots of a farmland (one seed each, all the same crop; each grows on its own)
+    stackThirst: 0.5,     // each extra growing seedling makes the cell drink this much more (x1 + 0.5 per extra)
+    intakeSeconds: 1,     // the water slot pours one bucket unit (bucketUnit water) into the soil this often...
+                          // ...while a whole unit still fits under waterMax (it never floods the farmland)
+    irrigationPerUnit: 150, // irrigated farmland growing crops takes 1 unit from the water cell next to it per this much
+                          // soil water it tops up (very slow; a dry water cell stops irrigating until it refills)
     // Farmland next to a water cell is irrigated: it stays full and never needs the bucket.
 };
 /** Experience: killing hostiles gives far more than anything else. Level n -> n+1 costs levelBase + levelStep*(n-1) + levelCurve*(n-1)^2. */
@@ -943,6 +1050,7 @@ for(const [id, n] of Object.entries(naturalMaterials.nature)){
     if(n.passable) groundTypes[id] = { name: prettify(id), color: NATURE_COLORS[id] ?? '#62a046', passable:true };
 }
 const FLOOR = Object.keys(groundTypes).find(id => groundTypes[id].passable) ?? 'grass';
+for(const id of Object.keys(groundTypes)) translatedName(groundTypes[id], id);   // floor names follow the language
 
 /**
  * Biomes. `resources` = chance per cell of each block (Blocks registry ids:
@@ -1331,6 +1439,20 @@ class WaterStore extends ItemComponent {
 }
 ItemComponent.register(WaterStore);
 
+/** A drink's thirst: consuming it restores this much thirst (milk).   new Quench(amount) */
+class Quench extends ItemComponent {
+    static id = 'quench';
+    constructor(amount = 0){ super(); this.amount = Number(amount) || 0; }
+}
+ItemComponent.register(Quench);
+/** What's left after consuming it (a milk bucket gives back an empty bucket).   new ReturnsItem(itemId)
+ *  (the field is itemId: `item` is the component's owner, set by the engine) */
+class ReturnsItem extends ItemComponent {
+    static id = 'returnsItem';
+    constructor(itemId = null){ super(); this.itemId = itemId; }
+}
+ItemComponent.register(ReturnsItem);
+
 /** An item that places a block into a cell.   new BlockItem(name, blockId, maxStack) */
 class BlockItem extends Item {
     static TYPE = 'block_item';
@@ -1468,6 +1590,165 @@ const Items = {
 };
 
 /* ---------------------------------------------------------------------
+ * 3a. Textures: optional images for game elements
+ *   Any game element in the WORLD can be drawn from an image instead of its built-in look:
+ *   blocks, terrain, ground floors, trees (trunk + canopy), saplings, crops, stations,
+ *   creatures, the player and arrows in flight. The HUD (inventory, item icons, station
+ *   menus, panels, buttons) is never textured.
+ *   Nothing here is required. An element with no texture, or whose image hasn't loaded
+ *   yet or failed to load, is drawn the original way, so missing files can't break the game.
+ *
+ *   Where to give a texture (the key is the element's id):
+ *     - in a spec:        defineElement({ id:'stone_wall', ..., texture:'textures/stone_wall.png' })
+ *     - in TEXTURES:      for anything, including generated elements (ores, trees, tools, crops,
+ *                         ground floors 'grass' / 'water', creatures, the 'player')
+ *     - from code:        Textures.set('iron_ore', 'textures/iron_ore.png')
+ *   A spec's texture replaces a TEXTURES entry with the same id.
+ *
+ *   A texture is a path, or an object:
+ *     texture: 'textures/door.png'
+ *     texture: {
+ *         src:'textures/door.png',                  the main image
+ *         states:{ open:'textures/door_open.png' }, images for a state (list below); a missing state uses src
+ *         canopy:'textures/oak_leaves.png',         trees: the leaves drawn over the player
+ *         scale:1,                                  1 = fits the cell (blocks) or the body (creatures / player)
+ *         offset:[0, 0],                            nudge in px
+ *         fit:'contain',                            'contain' (keep aspect) | 'cover' (fill, crop) | 'stretch'
+ *         clip:false,                               cut the image to the hex cell (floors default to true)
+ *         over:false,                               true = draw the built-in look first, the image on top
+ *         alpha:1,                                  opacity
+ *         smooth:true,                              false = crisp pixel art
+ *         rotate:true, angle:0,                     creatures / player / arrows: turn to face where they go.
+ *                                                   angle = the way the image faces, in degrees (0 = right, 90 = down)
+ *         frames:1, fps:8,                          a horizontal strip of animation frames. Creatures, the player and
+ *                                                   canopies animate; cells (cached terrain) use frame 0
+ *         eyes:false,                               zombie: true = keep the red eyes glowing at night over the image
+ *     }
+ *   src, every state and canopy can also be an object ({ src, scale, ... }) that overrides the
+ *   options above for that image only.
+ *
+ *   States (the first one that has an image is used):
+ *     ground floors   'dried', 'mud', 'low' (water under half full), then the biome id ('desert', 'cave'...)
+ *     door            'open'          machines (forge, pot...)  'lit'          boat  'aboard'
+ *     farmland        'flooded', 'wet' (over half watered)
+ *     crops / plants  'rotten', 'ripe', 'stage<n>' (n = growth stage from 0), 'sprout' (not grown yet), 'growing'
+ *                     (looked up on the plant block id first, e.g. 'wild_wheat' / 'berry_bush', then the crop id)
+ *     creatures       'moving'       player  'moving'
+ *   Farmland keeps its water gauge, plant and badges over its texture. Crack marks, weather (puddles,
+ *   snow), torch flames and lighting are effects and stay drawn as they are.
+ * --------------------------------------------------------------------- */
+const TEXTURES = {
+    // Examples (the paths are relative to the page):
+    // grass:       { src:'textures/grass.png', states:{ desert:'textures/dry_grass.png', cave:'textures/cave_floor.png' } },
+    // stone:       'textures/stone.png',
+    // oak_tree:    { src:'textures/oak_trunk.png', canopy:{ src:'textures/oak_leaves.png', scale:1.4 } },
+    // wheat:       { states:{ sprout:'textures/wheat_0.png', growing:'textures/wheat_1.png', ripe:'textures/wheat_2.png' } },
+    // cow:         { src:'textures/cow.png', angle:-90 },          // an image of a cow facing up
+    // player:      { src:'textures/player_walk.png', frames:4, fps:8, smooth:false },
+};
+const Textures = {
+    byId: TEXTURES,
+    _entries: new Map(),   // id -> normalized entry
+    _images: new Map(),    // src -> HTMLImageElement
+    failed: new Set(),     // srcs that didn't load
+    /** Give an element a texture (null removes it). */
+    set(id, tex){
+        if(tex == null) delete this.byId[id]; else this.byId[id] = tex;
+        this._entries.delete(id);
+        this._redraw();
+        return this;
+    },
+    has(id){ return this.byId[id] != null; },
+    /** { main, canopy, states:{} }: each slot = { src, ...options } or null. */
+    entry(id){
+        if(id == null || this.byId[id] == null) return null;
+        let e = this._entries.get(id);
+        if(!e){
+            const raw = this.byId[id], t = typeof raw === 'string' ? { src: raw } : raw;
+            const { src, states, canopy, ...opts } = t;
+            const slot = s => s == null ? null : Object.assign({}, opts, typeof s === 'string' ? { src: s } : s);
+            e = { main: slot(src), canopy: slot(canopy), states: {} };
+            for(const [k, v] of Object.entries(states ?? {})) e.states[k] = slot(v);
+            this._entries.set(id, e);
+        }
+        return e;
+    },
+    /** The loaded image for a path, or null (starts loading it the first time). */
+    image(src){
+        let img = this._images.get(src);
+        if(!img){
+            img = new Image();
+            img.onload = () => this._redraw();
+            img.onerror = () => { this.failed.add(src); console.warn(`Texture '${src}' didn't load; using the built-in look.`); };
+            img.src = src;
+            this._images.set(src, img);
+        }
+        return img.complete && img.naturalWidth > 0 ? img : null;
+    },
+    /**
+     * The image to draw for an element right now: { s (slot options), img } or null (draw the built-in look).
+     * which = 'main' | 'canopy'; states = state names to try first (main only), falsy ones are skipped.
+     */
+    pick(id, which = 'main', states = null){
+        const e = this.entry(id);
+        if(!e) return null;
+        let s = null;
+        if(which === 'main' && states) for(const st of states) if(st && e.states[st]){ s = e.states[st]; break; }
+        if(!s) s = e[which];
+        if(!s || !s.src) return null;
+        const img = this.image(s.src);
+        return img ? { s, img } : null;
+    },
+    /** True when the element has an image that replaces its look (not `over`). */
+    replaces(id, which = 'main', states = null){ const t = this.pick(id, which, states); return !!(t && !t.s.over); },
+    /**
+     * Draw a picked texture centered at (cx, cy) in a w x h box. g = a p5.Graphics, or null for the main canvas.
+     * o = { angle (radians, the way it should face), animate, clip (polygon points), alpha }
+     */
+    draw(g, t, cx, cy, w, h, o = {}){
+        const { s, img } = t, ctx = g ? g.drawingContext : drawingContext;
+        const frames = Math.max(1, Math.floor(s.frames || 1));
+        const fw = img.naturalWidth / frames, fh = img.naturalHeight;
+        const f = o.animate && frames > 1 ? Math.floor(performance.now() / 1000 * (s.fps ?? 8)) % frames : 0;
+        const k = s.scale ?? 1, off = s.offset ?? [0, 0];
+        let dw = w * k, dh = h * k;
+        const fit = s.fit ?? (o.clip ? 'cover' : 'contain');
+        if(fit !== 'stretch'){
+            const r = fit === 'cover' ? Math.max(dw / fw, dh / fh) : Math.min(dw / fw, dh / fh);
+            dw = fw * r; dh = fh * r;
+        }
+        ctx.save();
+        if(o.clip && o.clip.length){
+            ctx.beginPath();
+            o.clip.forEach((p, j) => j ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+            ctx.closePath(); ctx.clip();
+        }
+        ctx.globalAlpha *= (s.alpha ?? 1) * (o.alpha ?? 1);
+        if(s.smooth === false) ctx.imageSmoothingEnabled = false;
+        ctx.translate(cx + off[0], cy + off[1]);
+        if(o.angle != null && s.rotate !== false) ctx.rotate(o.angle - (s.angle ?? 0) * Math.PI / 180);
+        ctx.drawImage(img, f * fw, 0, fw, fh, -dw / 2, -dh / 2, dw, dh);
+        ctx.restore();
+    },
+    /** Which way something drawn at (x, y) is going, from where it was last frame: { moving, angle }. */
+    motion(obj, x, y){
+        const m = obj._texMotion || (obj._texMotion = { x, y, angle: 0, at: 0 });
+        const dx = x - m.x, dy = y - m.y, now = performance.now();
+        if(dx * dx + dy * dy > 0.04){ m.angle = Math.atan2(dy, dx); m.at = now; }
+        m.x = x; m.y = y;
+        return { moving: now - m.at < 150, angle: m.angle };
+    },
+    /** A newly loaded / changed texture: redraw the cached terrain. */
+    _redraw(){ if(typeof Theaya !== 'undefined' && Theaya) Theaya.fullRedraw = true; },
+};
+/** Scale a polygon about its center c by k. */
+const scalePoly = (pts, k, c) => pts.map(p => ({ x: c.x + (p.x - c.x) * k, y: c.y + (p.y - c.y) * k }));
+/** Draw a picked texture over one hex cell (blocks, plants, floors). */
+function drawCellTexture(g, t, c, poly, clip = false){
+    Textures.draw(g, t, c.x, c.y, HEX_W, HEX_H, { clip: (clip || t.s.clip) && poly ? scalePoly(poly, 1.04, c) : null });
+}
+
+/* ---------------------------------------------------------------------
  * 3b. Game elements: defineElement(spec)
  *   ONE function creates every kind of game element from a plain spec object. The items, blocks,
  *   foods, stations, creatures and skills of the game are all written this way (search for
@@ -1478,10 +1759,12 @@ const Items = {
  *     type        'item' | 'block' | 'terrain' | 'food' | 'crop' | 'creature' | 'workbench' | 'container' | 'skill' | 'upgrade'
  *     stack       stack size, only to override the category rule (STACK: resources 100, food 24, building blocks 16)
  *     tags        item tags ('#tag' in recipes)    color, accent, icon, shape   how it is drawn (item icons / blocks / creatures)
+ *     texture     optional image(s) for how it looks in the world (see 3a. Textures); without one it uses color / accent...
  *     recipe      { at:'workbench', input:{ item_id: amount }, count:1, time }  (or a list of them) how the item is crafted (not for creatures / crops / skills)
  *
  *   item        tier (material tier), fuel (burn units: 1 plank, 2 log, 4 coal), build: id => Item (your own class)
- *   food        hunger, satruation, instantHealth, regen:[health/s, seconds], poison:{ chance, apply:[damage/s, seconds] }
+ *   food        hunger, satruation, instantHealth, regen:[health/s, seconds], poison:{ chance, apply:[damage/s, seconds] },
+ *               thirst (a drink: thirst restored), returns (item id given back after it's consumed: 'bucket')
  *   block       tool ('pickaxe'|'axe'|'shovel'|'hoe'), tier (tool tier needed, 0 = hands, -1 = unbreakable), hardness (1 = stone, <0 instant),
  *   terrain     drop ('self' | item id | [{ id, chance, amount:[min, max], linked, priority }]; `linked` entries can't drop together,
  *               the hit with the highest priority wins), cellBehavior ('empty'|'passable'|'entityPass'|'blocked'), emitLight (glow px),
@@ -1491,7 +1774,8 @@ const Items = {
  *               crop (the harvested item id, default: the id), seed, seeds:[min, max], tier (hoe tier), regrow, rarity, biomes + the food fields
  *   creature    hp, speed, size, mover, behaviour ('passive'|'hostile'|'neutral'), sight, damage, cooldown, biomes, count, xp, skittish, dark,
  *               breaks, drops:[{ id, chance, amount, linked, priority }],
- *               actions:{ key:{ display:'Milk @', require:{ item:'bucket' }, result:{ item:'milk_bucket', count:1 }, cooldown:30 } }  (@ = the creature)
+ *               actions:{ key:{ display:'Milk @', require:{ item:'bucket', empty:true }, result:{ item:'milk_bucket', count:1 }, cooldown:30 } }
+ *               (@ = the creature; require.empty = only an empty bucket / canteen counts; require.consume:false = keep it)
  *   workbench   workbenchTag (recipe station key, default: id), recipes:[{ input:{}, output:{ id: n, ... }, time }],
  *   container   slots: n (a chest)  or  { input, output, fuel } (a machine: slots, one recipe at a time; no `fuel` = needs no fuel; no slots = craft menu),
  *               verb, also:['hand'], draw(g, def, block, c, poly, i), machine:{ fuelSeconds, verb, idle, hint, accepts, light, fancyFirst, blurb, listTitle }
@@ -1508,7 +1792,7 @@ const Blocks = {
             hardness:1, tier:0, tool:null, drops:[[id, 1]], color:'#888888',
         }, def);
         if(d.built === undefined) d.built = BUILT_KINDS.includes(d.kind);
-        return d;
+        return translatedName(d, id);   // d.name follows the language (see nameOf)
     },
     get(id){ return this.defs[id] ?? null; },
 };
@@ -1534,7 +1818,7 @@ const machineState = (cfg, accepts) => ({
     input:  new Box(cfg.input,  accepts),
     fuel:   new Box(cfg.fuel,   item => fuelValue(item) > 0),
     output: new Box(cfg.output, () => false),
-    burn: 0, burnMax: 0, progress: 0, active: null, lit: false, status: 'Idle',
+    burn: 0, burnMax: 0, progress: 0, active: null, lit: false, status: '',   // set every tick (M.idle / working / needs fuel)
 });
 
 /** `look` for Items.define from a spec: only the keys that were given (so the defaults stay). */
@@ -1578,6 +1862,8 @@ function defineElement(spec){
     const type = ELEMENT_ALIASES[spec.type] ?? spec.type ?? 'item', handler = ELEMENT_TYPES[type];
     if(!handler) throw new Error(`defineElement('${spec.id}'): unknown type '${spec.type}' (use ${Object.keys(ELEMENT_TYPES).join(', ')}).`);
     if(spec.stack != null) STACK_OF[spec.id] = spec.stack;
+    if(spec.texture != null) Textures.set(spec.id, spec.texture);
+    if(spec.name && spec.name !== prettify(spec.id) && !ENGLISH_NAMES[spec.id]) ENGLISH_NAMES[spec.id] = spec.name;   // custom English name (see nameOf)
     handler(spec, type);
     if(spec.recipe && !['creature', 'crop', 'skill', 'upgrade'].includes(type)) for(const r of [].concat(spec.recipe)) addSpecRecipe(r, spec.id);
     return spec;
@@ -1601,6 +1887,8 @@ ELEMENT_TYPES.food = o => {
             it.package(new Poisonous(p.chance ?? 1, secs, dps));
         }
         if(o.regen) it.package(new Regeneration(o.regen[0], o.regen[1]));
+        if(o.thirst) it.package(new Quench(o.thirst));          // a drink (milk)
+        if(o.returns) it.package(new ReturnsItem(o.returns));    // what's left after (an empty bucket)
         return it;
     }, Object.assign({ icon:'food' }, lookOf(o)));
 };
@@ -1667,7 +1955,8 @@ ELEMENT_TYPES.crop = o => {
 
 ELEMENT_TYPES.creature = o => {
     const { type, health, hp, drops, recipe, tags, ...rest } = o;
-    CREATURES[o.id] = Object.assign({ name: prettify(o.id) }, rest, { hp: hp ?? health ?? 10, drops: (drops ?? []).map(d => Array.isArray(d) ? d : Object.assign({}, d)) });
+    if(rest.behavior && !rest.behaviour) rest.behaviour = rest.behavior;   // American spelling accepted too
+    CREATURES[o.id] = translatedName(Object.assign({ name: prettify(o.id) }, rest, { hp: hp ?? health ?? 10, drops: (drops ?? []).map(d => Array.isArray(d) ? d : Object.assign({}, d)) }), o.id);
 };
 
 ELEMENT_TYPES.workbench = (o, type) => {
@@ -1677,22 +1966,30 @@ ELEMENT_TYPES.workbench = (o, type) => {
         name, kind:'station', station, tag: o.tag ?? 'wood', color: o.color ?? '#9b6b3d',
         hardness: o.hardness ?? 0.6, tool: o.tool ?? 'axe', passableFor: o.passableFor ?? ['zombie'],
     }, o.block);
-    STATION_TITLES[station] = o.title ?? name;
+    // the title follows the language: a custom `title` is used as is, otherwise the station's name (nameOf)
+    Object.defineProperty(STATION_TITLES, station, { get: () => o.title ?? nameOf(o.id), enumerable: true, configurable: true });
     if(o.draw) STATION_DRAW[station] = o.draw;
     if(slots && typeof slots === 'object'){   // a machine
         const cfg = { input: slots.input ?? 4, fuel: slots.fuel ?? 1, output: slots.output ?? 2, fuelSeconds: m.fuelSeconds ?? 12 };
         const noFuel = m.noFuel ?? slots.fuel == null;
-        MACHINES[station] = { cfg, cells: () => machineSet(station), verb: m.verb ?? 'Working', idle: m.idle ?? 'Idle: put items in the input slots',
-            fancyFirst: !!m.fancyFirst, noFuel, light: m.light ?? 0, hint: m.hint ?? 'item',
-            blurb: m.blurb ?? (noFuel ? 'Needs no fuel. Works on one recipe at a time.' : `Works on one recipe at a time. Fuel burns ${cfg.fuelSeconds}s per unit.`),
-            listTitle: m.listTitle ?? `What the ${name.toLowerCase()} makes` };
+        // verb / idle / hint / blurb / listTitle: THEAYA_TEXT 'station.<station>.<field>' when it has one (see stationText),
+        // else the spec's own text, else a generic one
+        const txt = (field, own, generic, vars) => () => stationText(station, field, own, generic, vars);
+        MACHINES[station] = { cfg, cells: () => machineSet(station), fancyFirst: !!m.fancyFirst, noFuel, light: m.light ?? 0 };
+        for(const [field, fn] of Object.entries({
+            verb:      txt('verb', m.verb, 'station.generic.verb'),
+            idle:      txt('idle', m.idle, 'station.generic.idle'),
+            hint:      txt('hint', m.hint, 'station.generic.hint'),
+            blurb:     txt('blurb', m.blurb, noFuel ? 'station.generic.blurbNoFuel' : 'station.generic.blurb', { secs: cfg.fuelSeconds }),
+            listTitle: () => stationText(station, 'listTitle', m.listTitle, 'station.generic.listTitle', { name: STATION_TITLES[station] }),
+        })) Object.defineProperty(MACHINES[station], field, { get: fn, enumerable: true });
         const accepts = m.accepts ?? acceptsFor(station);
         def.init = b => { if(!b.input) Object.assign(b, machineState(cfg, accepts)); };
     } else if(typeof slots === 'number'){   // a chest
         def.init = b => { if(!b.box) b.box = new Box(slots); };
     } else {                                // a recipe menu
         CRAFT_STATIONS.push(station);
-        STATION_VERBS[station] = o.verb ?? 'Craft';
+        Object.defineProperty(STATION_VERBS, station, { get: () => stationText(station, 'verb', o.verb, 'station.generic.craft'), enumerable: true, configurable: true });
         if(o.also) STATION_ALSO[station] = o.also;
     }
     Blocks.define(o.id, def);
@@ -1701,7 +1998,7 @@ ELEMENT_TYPES.workbench = (o, type) => {
 ELEMENT_TYPES.container = ELEMENT_TYPES.workbench;
 
 ELEMENT_TYPES.skill = (o, type) => {
-    Skills.defs[o.id] = Object.assign({ name: prettify(o.id), max: 5, color: '#cccccc' }, o, { kind: type === 'upgrade' ? 'upgrade' : 'skill' });
+    Skills.defs[o.id] = translatedName(Object.assign({ name: prettify(o.id), max: 5, color: '#cccccc' }, o, { kind: type === 'upgrade' ? 'upgrade' : 'skill' }), o.id);
 };
 ELEMENT_TYPES.upgrade = ELEMENT_TYPES.skill;
 
@@ -1846,6 +2143,10 @@ defineElements([
     { id:'fried_rice',     type:'food', hunger:28, satruation:14, instantHealth:4,  tags:['fine_food'], regen:[0.6, 25], color:'#f0d890', accent:'#c07a3a', icon:'food' },
     { id:'meat_pie',       type:'food', hunger:36, satruation:16, instantHealth:10, tags:['fine_food'], regen:[0.8, 20], color:'#b87838', accent:'#8a3a2a', icon:'food' },
     { id:'hearty_stew',    type:'food', hunger:44, satruation:20, instantHealth:6,  tags:['fine_food'], regen:[1.2, 30], color:'#a84a2a', accent:'#6b4a2a', icon:'food' },
+
+    // Milk a cow with an empty bucket. Drinking it quenches thirst and gives the bucket back.
+    { id:'milk_bucket', type:'food', hunger:8, satruation:4, thirst:30, returns:'bucket', stack:1, tags:['milk', 'drink'],
+      color:'#9b6b3d', accent:'#f4f1e8', icon:'bucket' },
 ]);
 
 // Melee weapons: one cell of reach (you must stand next to the target, like mining).
@@ -1998,41 +2299,45 @@ Blocks.define('fern', {
     drops: [['plant_fiber', 1]],
 });
 
-// Farmland: tilled grass that holds water (FARM.waterMax) and one crop.
-// Solid for the player only, so the crops don't get trampled.
+// Farmland: tilled grass that holds water (FARM.waterMax) and works like a container (open it with E or the wheel):
+// FARM.slots seedling slots (one seed each, all the same crop, each grows on its own) and a water slot that pours
+// a bucket / canteen into the soil. Solid for the player only, so the crops don't get trampled.
+// State: b.water, b.seeds (Box), b.intake (Box, 1 slot), b.plants[k] = { crop, age, dry, item } for seed slot k.
 Blocks.define('farmland', {
-    kind:'farmland', tag:'farmland', passableFor:['animal', 'zombie'], color:'#6b4a2e', hardness:0.3, tool:'hoe',
+    kind:'farmland', tag:'farmland', station:'farmland', passableFor:['animal', 'zombie'], color:'#6b4a2e', hardness:0.3, tool:'hoe',
     drops: [],
-    dropsFor: b => b.plant ? [[Crops.get(b.plant.crop).seed, b.plant.count || 1]] : [],
-    init(b){ if(b.water == null) b.water = 0; if(b.plant === undefined) b.plant = null; },
+    dropsFor: b => {   // the seeds in its slots come back
+        const n = {};
+        for(const it of (b.seeds ? b.seeds.items : [])) if(it) n[it.id] = (n[it.id] || 0) + it.count;
+        return Object.entries(n);
+    },
+    init(b){ initFarmland(b); },
 });
+Object.defineProperty(STATION_TITLES, 'farmland', { get: () => nameOf('farmland'), enumerable: true, configurable: true });
 
 // Stations, containers, base building and the boat. Each spec makes the item, the block and the recipe that crafts it
 // (see defineElement). Zombies shamble through workbenches / looms / cooking pots / drying racks / chests (but not doors or the forge).
 defineElements([
     // ----- stations -----
-    { id:'workbench', type:'workbench', icon:'workbench', color:'#9b6b3d', verb:'Craft', also:['hand'], recipe:{ at:'hand', input:{ '#planks':4 } } },
-    { id:'loom',      type:'workbench', icon:'loom',      color:'#a8834f', verb:'Weave', recipe:{ input:{ plant_fiber:5, oak_log:4, stone:2 } } },
+    // the stations' texts (verbs, idle text, blurbs...) are in THEAYA_TEXT: 'station.<station>.<field>'
+    { id:'workbench', type:'workbench', icon:'workbench', color:'#9b6b3d', also:['hand'], recipe:{ at:'hand', input:{ '#planks':4 } } },
+    { id:'loom',      type:'workbench', icon:'loom',      color:'#a8834f', recipe:{ input:{ plant_fiber:5, oak_log:4, stone:2 } } },
     {   // a cooking pot is a machine: slots + one recipe at a time + fuel
         id:'cooking_pot', type:'workbench', workbenchTag:'pot', icon:'pot', color:'#5a5f66', tag:'stone', hardness:0.8, tool:'pickaxe',
         slots:{ input:4, fuel:1, output:2 },
-        machine:{ fuelSeconds:12, verb:'Cooking', idle:'Idle: put food in the input slots (a canteen for water)', fancyFirst:true, hint:'food', light:70, accepts: isCookable,
-                  blurb:'Cooks one dish at a time. Meat can leave grease. Fuel burns 12s per unit.',
-                  listTitle:'What the cooking pot makes (a canteen in the input = water)' },
+        machine:{ fuelSeconds:12, fancyFirst:true, light:70, accepts: isCookable },
         recipe:{ input:{ clay:3, stone:2, stick:2 } },
     },
     {
         id:'forge', type:'workbench', icon:'furnace', color:'#8a6656', tag:'stone', hardness:1, tool:'pickaxe', passableFor:[],
         slots:{ input:4, fuel:1, output:2 },
-        machine:{ fuelSeconds:12, verb:'Smelting', idle:'Idle: put ore, wood or sand in the input slots', hint:'ore', light:95, accepts: isSmeltable,
-                  blurb:'Smelts one recipe at a time. Fuel burns 12s per unit (coal 4, log 2, planks 1).' },
+        machine:{ fuelSeconds:12, light:95, accepts: isSmeltable },
         recipe:{ input:{ stone:6, clay:4 } },
     },
     {   // no fuel slot = needs no fuel
         id:'drying_rack', type:'workbench', workbenchTag:'rack', icon:'rack', color:'#a8834f',
         slots:{ input:4, output:2 },
-        machine:{ verb:'Drying', idle:'Idle: put raw leather or raw meat in the input slots', fancyFirst:true, hint:'raw', accepts: isDryable,
-                  blurb:'Needs no fuel. Dries one recipe at a time: pork + beef together make jerky, pork alone makes raw bacon.' },
+        machine:{ fancyFirst:true, accepts: isDryable },
         draw(g, def, b, c){   // a wooden frame with strips of meat and hide hanging on it
             g.stroke(shade(def.color, -0.5)); g.strokeWeight(3);
             g.line(c.x - 14, c.y + 13, c.x - 14, c.y - 12); g.line(c.x + 14, c.y + 13, c.x + 14, c.y - 12); g.line(c.x - 16, c.y - 10, c.x + 16, c.y - 10);
@@ -2113,8 +2418,8 @@ class Recipe {
         return key.startsWith('#') ? item.hasTag(key.slice(1)) : item.id === key;
     }
     static label(key){
-        if(key === '@water') return 'water (canteen / bucket)';
-        return key.startsWith('#') ? `any ${prettify(key.slice(1))}` : prettify(key);
+        if(key === '@water') return T('recipe.water');
+        return key.startsWith('#') ? T('recipe.anyTag', { tag: nameOf(key.slice(1)) }) : nameOf(key);
     }
 
     constructor(station = 'hand', output = null, inputs = {}, opts = {}){
@@ -2431,12 +2736,14 @@ class SurvivalInventory extends Inventory {
  * interface as SurvivalInventory (getSlot, setSlot, accepts, changed,
  * countOf, take), so recipes and the slot UI work on both.
  *   new Box(size, accept = item => true)
+ * box.slotMax = n limits every slot to n items (farmland seedlings: 1).
  */
 class Box {
     constructor(size = 9, accept = null){
         this.size = Math.max(1, Math.floor(size));
         this.items = new Array(this.size).fill(null);
         this._accept = accept;
+        this.slotMax = null;
     }
     get firstSlot(){ return 0; }
     get lastSlot(){ return this.size - 1; }
@@ -2472,6 +2779,14 @@ class Box {
     /** Adds a stack (matching stacks first). Returns how many did NOT fit. */
     give(item){
         if(!item || item.count <= 0) return 0;
+        if(this.slotMax){   // limited slots: fill empty ones, slotMax each
+            for(let k = 0; k < this.size && item.count > 0; k++){
+                if(this.items[k]) continue;
+                if(item.count <= this.slotMax){ this.items[k] = item; return 0; }
+                this.items[k] = item.split(this.slotMax);
+            }
+            return Math.max(0, item.count);
+        }
         if(item.getMaxStack() > 1) for(const it of this.items){ if(it && it !== item && it.canStackWith(item)) it.mergeFrom(item); if(item.count <= 0) break; }
         if(item.count > 0){
             const k = this.items.findIndex(it => !it);
@@ -2501,8 +2816,16 @@ function moveOrSwapRef(a, b){
     if(sameRef(a, b)) return false;
     const A = refItem(a), B = refItem(b);
     if(!A) return false;
-    if(!b.box.accepts(A) || (B && !a.box.accepts(B))){ notify("That can't go in that slot.", '#ffb070'); return false; }
-    if(B && B !== A && B.canStackWith(A) && !B.isFullStack()) B.mergeFrom(A);
+    if(!b.box.accepts(A) || (B && !a.box.accepts(B))){ notify(T('slot.cantGo'), '#ffb070'); return false; }
+    // slots that hold at most slotMax (farmland seedlings: one seed each)
+    const lim = b.box.slotMax, limA = a.box.slotMax;
+    if(lim && B && B !== A && B.canStackWith(A)){ notify(T('slot.onlyPer', { n: lim }), '#ffb070'); return false; }
+    if(limA && B && B.count > limA){ notify(T('slot.onlyPer', { n: limA }), '#ffb070'); return false; }
+    if(lim && A.count > lim){
+        if(B){ notify(T('slot.onlyPer', { n: lim }), '#ffb070'); return false; }
+        b.box.setSlot(b.i, A.split(lim));   // move just slotMax of the stack
+    }
+    else if(B && B !== A && B.canStackWith(A) && !B.isFullStack()) B.mergeFrom(A);
     else { a.box.setSlot(a.i, B ?? null); b.box.setSlot(b.i, A); }
     a.box.changed({ event:'swap' });
     if(b.box !== a.box) b.box.changed({ event:'swap' });
@@ -2636,6 +2959,7 @@ function setGround(x, y, ground){
 function containerBusy(b){
     if(!b) return false;
     if(b.box) return !b.box.isEmpty;
+    if(b.intake) return !b.intake.isEmpty;   // farmland: take the bucket out first (its seeds drop when it's dug up)
     if(b.input) return !(b.input.isEmpty && b.fuel.isEmpty && b.output.isEmpty);
     return false;
 }
@@ -2950,6 +3274,19 @@ player.package(Entity.Packages.living(), Entity.Packages.speed(), {
     }
 });
 if(player.rendering) player.rendering.color = '#f3d9a4';
+// The 'player' texture (see 3a. Textures): drawn in a box twice the player's size, turned to where it walks.
+{
+    const engineRender = player.render;
+    player.render = function(...args){
+        const p = this.effectivePosition, mot = Textures.motion(this, p.x, p.y);
+        const tex = Textures.pick('player', 'main', [mot.moving && 'moving']);
+        if(!tex || tex.s.over) engineRender.apply(this, args);
+        if(tex && this.active){
+            const sc = this.transform.scale, size = Math.max(sc.x, sc.y) * 2;
+            Textures.draw(null, tex, p.x, p.y, size, size, { angle: mot.angle, animate: true });
+        }
+    };
+}
 areaZones.home.link(player);
 
 /** Which armor slot an item goes in ('head' | 'chest' | 'legs' | 'feet'), or null. */
@@ -2976,7 +3313,7 @@ function damagePlayer(amount, source = ''){
         const it = player.gear[s].getSlot(0);
         if(!it) continue;
         it.wear(1);
-        if(it.isBroken){ player.gear[s].setSlot(0, null); notify(`Your ${prettify(it.id)} broke!`, '#ff8a7a'); }
+        if(it.isBroken){ player.gear[s].setSlot(0, null); notify(T('notify.broke', { item: nameOf(it.id) }), '#ff8a7a'); }
     }
     GameUI.hurtAt = performance.now();
     if(source) GameUI.lastHurt = source;
@@ -3023,12 +3360,12 @@ function gainXp(amount, what = ''){
     let ups = 0;
     while(Levels.xp >= Levels.need()){ Levels.xp -= Levels.need(); Levels.level++; ups++; }
     const shown = Math.round(amount * 10) / 10;
-    Levels.flash = { text: `+${shown} xp${what ? ' (' + what + ')' : ''}`, until: performance.now() + 1800 };
+    Levels.flash = { text: T('xp.gain', { n: shown }) + (what ? T('xp.kind', { kind: T('xp.' + what) }) : ''), until: performance.now() + 1800 };
     if(ups){
         player.maxHealth += XP.healthPerLevel * ups;
         player.health = Math.min(player.maxHealth, player.health + XP.healthPerLevel * ups);
         Levels.pending += ups;   // every level gives a skill / upgrade choice (see openChoice)
-        notify(`Level up! You are level ${Levels.level} (+${XP.healthPerLevel * ups} max health)`, '#ffd75e');
+        notify(T('level.up', { level: Levels.level, hp: XP.healthPerLevel * ups }), '#ffd75e');
     }
 }
 
@@ -3068,35 +3405,35 @@ const stealthSight = l => [1, 0.7, 0.5, 0.3][l] ?? 0.3;
 // The skills and upgrades offered at every level up (desc(level) says what it does AT that level).
 defineElements([
     // ----- skills -----
-    { id:'active_runner', type:'skill', name:'Active Runner', max:5, color:'#ffd75e',
-      desc: l => `Move ${pct(0.1 * l)} faster. Walking costs ${pct(0.2 * l)} less of its extra hunger.` },
-    { id:'steel_stomach', type:'skill', name:'Steel Stomach', max:5, color:'#9ad84a',
-      desc: l => `Poison lasts and hurts ${pct(0.12 * l)} less. Hunger drains ${pct(0.05 * l)} slower.` },
-    { id:'hunter', type:'skill', name:'Hunter', max:3, color:'#c98a45',
-      desc: l => `Hold Shift to sneak (${pct(1 - sneakSpeed(l))} slower). Creatures notice you from ${pct(1 - stealthSight(l))} less far away while sneaking.` },
-    { id:'green_thumb', type:'skill', name:'Green Thumb', max:5, color:'#5fc46a',
-      desc: l => `Crops drink ${pct(0.08 * l)} less water. ${pct(0.1 * l)} chance of a bonus harvest per plant.` },
-    { id:'prospector', type:'skill', name:'Prospector', max:5, color:'#9aa3b8',
-      desc: l => `Mining and chopping are ${pct(0.08 * l)} faster. ${pct(0.08 * l)} chance of an extra ore.` },
-    { id:'skinner', type:'skill', name:'Skinner', max:3, color:'#b07a45',
-      desc: l => `${pct(0.15 * l)} chance of one more of each drop from animals and monsters.` },
-    { id:'thick_skin', type:'skill', name:'Thick Skin', max:5, color:'#d9786e',
-      desc: l => `Take ${pct(0.05 * l)} less damage (on top of armor).` },
-    { id:'brawler', type:'skill', name:'Brawler', max:5, color:'#e05555',
-      desc: l => `Your weapons and arrows do ${pct(0.08 * l)} more damage.` },
-    { id:'regenerator', type:'skill', name:'Regenerator', max:5, color:'#ff9ac0',
-      desc: l => `Health regenerates ${pct(0.2 * l)} faster when well fed and watered.` },
-    { id:'weatherproof', type:'skill', name:'Weatherproof', max:3, color:'#7fc8e8',
-      desc: l => `Heat makes you thirsty and cold makes you hungry ${pct(0.25 * l)} less.` },
-    { id:'quick_learner', type:'skill', name:'Quick Learner', max:3, color:'#d8ff9a',
-      desc: l => `Gain ${pct(0.1 * l)} more experience.` },
+    { id:'active_runner', type:'skill', max:5, color:'#ffd75e',
+      desc: l => T('skill.active_runner.desc', { a: pct(0.1 * l), b: pct(0.2 * l) }) },
+    { id:'steel_stomach', type:'skill', max:5, color:'#9ad84a',
+      desc: l => T('skill.steel_stomach.desc', { a: pct(0.12 * l), b: pct(0.05 * l) }) },
+    { id:'hunter', type:'skill', max:3, color:'#c98a45',
+      desc: l => T('skill.hunter.desc', { a: pct(1 - sneakSpeed(l)), b: pct(1 - stealthSight(l)) }) },
+    { id:'green_thumb', type:'skill', max:5, color:'#5fc46a',
+      desc: l => T('skill.green_thumb.desc', { a: pct(0.08 * l), b: pct(0.1 * l) }) },
+    { id:'prospector', type:'skill', max:5, color:'#9aa3b8',
+      desc: l => T('skill.prospector.desc', { a: pct(0.08 * l), b: pct(0.08 * l) }) },
+    { id:'skinner', type:'skill', max:3, color:'#b07a45',
+      desc: l => T('skill.skinner.desc', { a: pct(0.15 * l) }) },
+    { id:'thick_skin', type:'skill', max:5, color:'#d9786e',
+      desc: l => T('skill.thick_skin.desc', { a: pct(0.05 * l) }) },
+    { id:'brawler', type:'skill', max:5, color:'#e05555',
+      desc: l => T('skill.brawler.desc', { a: pct(0.08 * l) }) },
+    { id:'regenerator', type:'skill', max:5, color:'#ff9ac0',
+      desc: l => T('skill.regenerator.desc', { a: pct(0.2 * l) }) },
+    { id:'weatherproof', type:'skill', max:3, color:'#7fc8e8',
+      desc: l => T('skill.weatherproof.desc', { a: pct(0.25 * l) }) },
+    { id:'quick_learner', type:'skill', max:3, color:'#d8ff9a',
+      desc: l => T('skill.quick_learner.desc', { a: pct(0.1 * l) }) },
     // ----- stat upgrades -----
-    { id:'vitality', type:'upgrade', name:'Vitality', max:10, color:'#e05555',
-      desc: l => `+10 max health and a heal of 10 (${10 * l} in total from this).`, onPick(){ player.maxHealth += 10; player.health += 10; } },
-    { id:'hydration', type:'upgrade', name:'Well Hydrated', max:8, color:'#4aa3ff',
-      desc: l => `Thirst drains ${pct(0.06 * l)} slower.` },
-    { id:'big_appetite', type:'upgrade', name:'Big Appetite', max:8, color:'#e0a040',
-      desc: l => `Hunger drains ${pct(0.06 * l)} slower.` },
+    { id:'vitality', type:'upgrade', max:10, color:'#e05555',
+      desc: l => T('skill.vitality.desc', { a: 10 * l }), onPick(){ player.maxHealth += 10; player.health += 10; } },
+    { id:'hydration', type:'upgrade', max:8, color:'#4aa3ff',
+      desc: l => T('skill.hydration.desc', { a: pct(0.06 * l) }) },
+    { id:'big_appetite', type:'upgrade', max:8, color:'#e0a040',
+      desc: l => T('skill.big_appetite.desc', { a: pct(0.06 * l) }) },
 ]);
 function isSneaking(){ return skillLevel('hunter') > 0 && Keys.down('key@shift') && !GameUI.inventoryOpen && !GameUI.station; }
 /** Multiplier on how far creatures notice you (1 = normal). */
@@ -3129,7 +3466,7 @@ function pickChoice(id){
     Levels.pending--;
     GameUI.choice = null;
     theayaScene.pause = GameUI.paused;
-    notify(`${d.name} ${Skills.level(id) === 1 && d.kind === 'skill' ? 'learned' : 'raised'}: level ${Skills.level(id)}`, d.color);
+    notify(T(Skills.level(id) === 1 && d.kind === 'skill' ? 'skill.learned' : 'skill.raised', { name: d.name, level: Skills.level(id) }), d.color);
     openChoice();   // another level waiting? offer the next pick
 }
 
@@ -3147,7 +3484,7 @@ function setBoating(on, cell = -1){
         const { x, y } = cellXY(i);
         Theaya.zone.setReserved(x, y, !isPassable(x, y, 'player'));
     }
-    notify(on ? 'You climb into the boat. Sail over the water; step onto land to get out.' : 'You step out of the boat.', '#8fd0ff');
+    notify(T(on ? 'boat.in' : 'boat.out'), '#8fd0ff');
 }
 const boatHasPlayer = i => Boat.aboard && Boat.cell === i;
 function tickBoat(){
@@ -3191,7 +3528,7 @@ function tickSurvival(dt){
     if(p.poison){
         p.health -= p.poison.dps * dt;
         p.poison.left -= dt;
-        if(p.poison.left <= 0){ p.poison = null; notify('The poison wore off.', '#a6f0a0'); }
+        if(p.poison.left <= 0){ p.poison = null; notify(T('poison.woreOff'), '#a6f0a0'); }
     }
     const wellFed = !p.poison && p.nutritionDamageRate() === 0 && p.hunger >= SURVIVAL.regenAbove && p.thirst >= SURVIVAL.regenAbove;
     if(wellFed && p.health < p.maxHealth) p.health = Math.min(p.maxHealth, p.health + SURVIVAL.regenRate * (1 + 0.2 * skillLevel('regenerator')) * dt);
@@ -3211,7 +3548,7 @@ function respawn(){
     areaZones.home.move(player, s.x, s.y);
     Object.assign(player, { health: player.maxHealth, hunger: 60, satruation: 5, thirst: 90, poison: null, regenBuff: null });
     if(typeof Mobs !== 'undefined') Mobs.calmNear(s, 8);   // hostiles at camp give up the chase
-    notify('You collapsed... and woke up back at camp.', '#ff9a8a');
+    notify(T('death.respawn'), '#ff9a8a');
 }
 
 
@@ -3248,9 +3585,9 @@ function walkTo(x, y, onArrive = null){
     Act.job = null;
     const ok = areaZones.home.moveTo(player, x, y, Object.assign(pathOpts(), {
         onArrive: () => { if(onArrive) onArrive(); },
-        onBlocked: () => notify('Path blocked.', '#ffb070'),
+        onBlocked: () => notify(T('path.blocked'), '#ffb070'),
     }));
-    if(!ok) notify("Can't get there.", '#ffb070');
+    if(!ok) notify(T('path.cantGet'), '#ffb070');
     return !!ok;
 }
 /**
@@ -3264,7 +3601,7 @@ function moveToward(x, y){
     if(isPassable(x, y)) return walkTo(x, y);
     if(hexDist(pc, cell) === 1){ Act.job = null; areaZones.home.stopMove(player); return true; }   // already next to it
     const ap = findApproach(cell);
-    if(!ap){ notify("Can't reach that cell.", '#ffb070'); return false; }
+    if(!ap){ notify(T('path.cantReach'), '#ffb070'); return false; }
     return walkTo(ap.x, ap.y);
 }
 /** Run fn once the player stands next to `cell` (walking there first when needed). */
@@ -3272,18 +3609,18 @@ function doNear(cell, fn){
     const pc = playerCell();
     if(pc && hexDist(pc, cell) === 1){ fn(); return; }
     const ap = findApproach(cell);
-    if(!ap){ notify("Can't reach that cell.", '#ffb070'); return; }
+    if(!ap){ notify(T('path.cantReach'), '#ffb070'); return; }
     walkTo(ap.x, ap.y, () => { const c = playerCell(); if(c && hexDist(c, cell) === 1) fn(); });
 }
 
 function verbFor(def){
     switch(def.kind){
-        case 'tree': return 'Chop';
-        case 'stone': case 'ore': return 'Mine';
-        case 'soil': return 'Dig';
-        case 'sapling': case 'plant': return 'Dig up';
-        case 'farmland': return 'Clear';
-        default: return 'Break';
+        case 'tree': return T('verb.chop');
+        case 'stone': case 'ore': return T('verb.mine');
+        case 'soil': return T('verb.dig');
+        case 'sapling': case 'plant': return T('verb.digUp');
+        case 'farmland': return T('verb.clear');
+        default: return T('verb.break');
     }
 }
 
@@ -3298,10 +3635,10 @@ function verbFor(def){
 function miningInfo(def, item){
     const m = item && typeof item.get === 'function' ? item.get('mining') : null;
     const fits = !!(m && def.tool && !item.isBroken && m.classes.includes(def.tool) && m.worksOn(def.tag));
-    if(def.hardness >= 10) return { ok:false, fits, reason:'Unbreakable' };
+    if(def.hardness >= 10) return { ok:false, fits, reason: T('mine.unbreakable') };
     if(def.tier > 0){
-        if(!fits) return { ok:false, fits, reason:`Needs a tier ${def.tier}+ ${def.tool}` };
-        if(m.tier < def.tier) return { ok:false, fits, reason:`Needs a tier ${def.tier}+ ${def.tool} (yours: tier ${m.tier})` };
+        if(!fits) return { ok:false, fits, reason: T('mine.needsTier', { tier: def.tier, tool: nameOf(def.tool) }) };
+        if(m.tier < def.tier) return { ok:false, fits, reason: T('mine.needsTier', { tier: def.tier, tool: nameOf(def.tool) }) + T('tier.yours', { tier: m.tier }) };
     }
     if(def.hardness < 0) return { ok:true, fits, time: 0.1 };
     const speed = fits ? m.speed * (1 + 0.25 * Math.max(0, m.tier - def.tier)) : HAND_SPEED;
@@ -3344,9 +3681,9 @@ function rollDropList(list){
 function wearTool(tool, tag){
     if(!tool || typeof tool.mine !== 'function') return;
     tool.mine(tag, player);
-    if(tool.isBroken){ player.inventory.removeRef(tool); notify(`Your ${prettify(tool.id)} broke!`, '#ff8a7a'); }
+    if(tool.isBroken){ player.inventory.removeRef(tool); notify(T('notify.broke', { item: nameOf(tool.id) }), '#ff8a7a'); }
 }
-const dropsText = drops => drops.filter(([, n]) => n > 0).map(([id, n]) => `${n} ${prettify(id)}`).join(', ');
+const dropsText = drops => drops.filter(([, n]) => n > 0).map(([id, n]) => T('item.count', { n, name: nameOf(id) })).join(T('list.sep'));
 function hasRoomFor(drops){ return drops.every(([id, n]) => n <= 0 || roomForItems(id) >= n); }
 
 /* Timed jobs (mining, tilling): { x, y, time, elapsed, tool, verb, check(), done(job) } */
@@ -3357,8 +3694,8 @@ function startMine(x, y){
     const tool = heldItem();
     const info = miningInfo(def, tool);
     if(!info.ok){ notify(info.reason, '#ff8a7a'); return; }
-    if(containerBusy(b)){ notify(`Empty the ${def.name} first.`, '#ff8a7a'); return; }
-    if(boatHasPlayer(cellIndex(x, y))){ notify("You're sitting in it.", '#ff8a7a'); return; }
+    if(containerBusy(b)){ notify(T('container.emptyFirst', { name: def.name }), '#ff8a7a'); return; }
+    if(boatHasPlayer(cellIndex(x, y))){ notify(T('boat.sittingIn'), '#ff8a7a'); return; }
     const id = b.id;
     startJob({ x, y, id, time: info.time, tool, verb: verbFor(def),
         check: () => { const c = blockAt(x, y); return !!(c && c.id === id); }, done: finishMine });
@@ -3368,7 +3705,7 @@ function tickJob(dt){
     if(!j) return;
     const pc = playerCell();
     if(!j.check() || !pc || hexDist(pc, j) > 1 || areaZones.home.isMoving(player)){ Act.job = null; return; }
-    if(heldItem() !== j.tool){ Act.job = null; notify('Stopped: you switched items.', '#ffb070'); return; }
+    if(heldItem() !== j.tool){ Act.job = null; notify(T('job.switched'), '#ffb070'); return; }
     j.elapsed += dt;
     if(j.elapsed >= j.time){ Act.job = null; j.done(j); }
 }
@@ -3376,11 +3713,11 @@ function finishMine(j){
     const b = blockAt(j.x, j.y), def = Blocks.get(j.id);
     const drops = rollDrops(def, b);
     if(def.kind === 'ore' && drops.length && drops[0][1] > 0 && skillChance('prospector', 0.08)) drops[0][1]++;   // Prospector: an extra ore
-    if(!hasRoomFor(drops)){ notify('Inventory full!', '#ff8a7a'); return; }
+    if(!hasRoomFor(drops)){ notify(T('inv.full'), '#ff8a7a'); return; }
     if(j.tool && miningInfo(def, j.tool).fits) wearTool(j.tool, def.tag);
     setBlock(j.x, j.y, null);
     for(const [id, n] of drops) if(n > 0) giveItems(id, n);
-    if(drops.length) notify('+ ' + dropsText(drops), '#a6f0a0');
+    if(drops.length) notify(T('gain.items', { items: dropsText(drops) }), '#a6f0a0');
     // mining xp: ore pays by its tier, stone and trees a little, other blocks nothing
     if(def.kind === 'ore' || def.kind === 'ore_heart') gainXp(XP.ore + XP.oreTier * (def.tier || 0), 'mining');
     else if(def.kind === 'stone') gainXp(XP.stone, 'mining');
@@ -3392,18 +3729,18 @@ const isHoe = item => !!(item && item.get && item.get('mining') && item.get('min
 /** Grass with nothing on it (ferns get cleared) that the player isn't standing on. */
 function canTill(x, y){
     const g = groundAt(x, y), def = blockDefAt(x, y), pc = playerCell();
-    if(!g || !g.passable || Theaya.ground[cellIndex(x, y)] !== FLOOR) return { ok:false, reason:'Only grass can be tilled' };
-    if(def && !def.replaceable) return { ok:false, reason:'Something is in the way' };
-    if(pc && pc.x === x && pc.y === y) return { ok:false, reason:"You're standing here" };
+    if(!g || !g.passable || Theaya.ground[cellIndex(x, y)] !== FLOOR) return { ok:false, reason: T('till.onlyGrass') };
+    if(def && !def.replaceable) return { ok:false, reason: T('cell.inTheWay') };
+    if(pc && pc.x === x && pc.y === y) return { ok:false, reason: T('cell.standingHere') };
     return { ok:true };
 }
 function tillTime(tool){ const m = tool && tool.get('mining'); return Math.max(0.3, MINE_TIME_SCALE * 0.35 / (m ? m.speed : HAND_SPEED)); }
 function startTill(x, y){
     const tool = heldItem();
-    if(!isHoe(tool)){ notify('Hold a hoe to till the soil.', '#ffb070'); return; }
+    if(!isHoe(tool)){ notify(T('till.holdHoe'), '#ffb070'); return; }
     const can = canTill(x, y);
     if(!can.ok){ notify(can.reason, '#ff8a7a'); return; }
-    startJob({ x, y, time: tillTime(tool), tool, verb:'Till', check: () => canTill(x, y).ok, done: finishTill });
+    startJob({ x, y, time: tillTime(tool), tool, verb: T('verb.till'), check: () => canTill(x, y).ok, done: finishTill });
 }
 function finishTill(j){
     const i = cellIndex(j.x, j.y);
@@ -3411,7 +3748,7 @@ function finishTill(j){
     wearTool(j.tool, 'grass');
     Theaya.puddles.delete(i); Theaya.mud.delete(i); Theaya.snow.delete(i);
     setBlock(j.x, j.y, 'farmland', { water: Math.min(FARM.waterMax, wet) });
-    notify(nextToWater(i) ? 'Tilled the soil. The water next to it irrigates it: just plant seeds.' : 'Tilled the soil. Water it with a bucket, then plant seeds.', '#c9e89a');
+    notify(T(nextToWater(i) ? 'till.doneIrrigated' : 'till.done'), '#c9e89a');
     gainXp(XP.till, 'farming');
 }
 
@@ -3434,9 +3771,9 @@ function floorDigAt(x, y){
 /** Bare floor (no block on it). You can dig the cell you're standing on. */
 function canDigGrass(x, y, tool){
     const r = floorDigAt(x, y);
-    if(!r) return { ok:false, reason:'Nothing to dig here' };
-    if(blockAt(x, y)) return { ok:false, reason:'Something is in the way' };
-    if(!r.byHand && !hasToolClass(tool ?? heldItem(), r.tool)) return { ok:false, reason:`Needs a ${r.tool} to dig ${r.what}` };
+    if(!r) return { ok:false, reason: T('dig.nothing') };
+    if(blockAt(x, y)) return { ok:false, reason: T('cell.inTheWay') };
+    if(!r.byHand && !hasToolClass(tool ?? heldItem(), r.tool)) return { ok:false, reason: T('dig.needsTool', { tool: nameOf(r.tool), what: nameOf(r.what) }) };
     return { ok:true };
 }
 /** Like mining the matching block: the right tool is faster, bare hands work where allowed. */
@@ -3447,36 +3784,135 @@ function digGrassTime(tool, x, y){
 }
 function digLabel(held, x, y){
     const r = floorDigAt(x, y); if(!r) return null;
-    return `Dig ${r.what} (${digGrassTime(held, x, y).toFixed(1)}s${hasToolClass(held, r.tool) || !r.byHand ? '' : ', by hand'})`;
+    return T('dig.label', { what: nameOf(r.what), secs: digGrassTime(held, x, y).toFixed(1), hand: hasToolClass(held, r.tool) || !r.byHand ? '' : T('dig.byHand') });
 }
 function startDigGrass(x, y){
     const tool = heldItem(), can = canDigGrass(x, y, tool), r = floorDigAt(x, y);
     if(!can.ok){ notify(can.reason, '#ff8a7a'); return; }
-    if(roomForItems(r.item) < 1){ notify('Inventory full!', '#ff8a7a'); return; }
-    startJob({ x, y, time: digGrassTime(tool, x, y), tool, verb:'Dig', check: () => canDigGrass(x, y, tool).ok, done: finishDigGrass });
+    if(roomForItems(r.item) < 1){ notify(T('inv.full'), '#ff8a7a'); return; }
+    startJob({ x, y, time: digGrassTime(tool, x, y), tool, verb: T('verb.dig'), check: () => canDigGrass(x, y, tool).ok, done: finishDigGrass });
 }
 function finishDigGrass(j){
     const r = floorDigAt(j.x, j.y); if(!r) return;
-    if(roomForItems(r.item) < 1){ notify('Inventory full!', '#ff8a7a'); return; }
+    if(roomForItems(r.item) < 1){ notify(T('inv.full'), '#ff8a7a'); return; }
     if(hasToolClass(j.tool, r.tool)) wearTool(j.tool, r.tag);
     giveItems(r.item, 1);
-    notify(`+ 1 ${prettify(r.item)}`, '#a6f0a0');
+    notify(T('gain.one', { name: nameOf(r.item) }), '#a6f0a0');
 }
 
-/** Plant view of a block: { crop, stage, k, ripe, rot } or null. */
-function plantInfo(b){
-    if(!b || !b.plant) return null;
-    const crop = Crops.get(b.plant.crop);
+/** View of a plant state ({ crop, age }): { crop, stage, k, ripe, rot } or null. */
+function plantInfoOf(p){
+    if(!p) return null;
+    const crop = Crops.get(p.crop);
     if(!crop) return null;
-    const k = Crops.stageAt(crop, b.plant.age), stage = k < 0 ? null : crop.stages[k];
+    const k = Crops.stageAt(crop, p.age), stage = k < 0 ? null : crop.stages[k];
     return { crop, stage, k, ripe: !!(stage && stage.done), rot: !!(stage && stage.rot) };
+}
+/** Plant view of a block with ONE plant (wild plants, berry bushes): see plantInfoOf. Farmland: see farmSeedlings. */
+function plantInfo(b){ return b && b.plant ? plantInfoOf(b.plant) : null; }
+
+/* ----- Farmland as a container ----- */
+/** Gives a farmland block its slots (see the farmland block). */
+function initFarmland(b){
+    if(b.water == null) b.water = 0;
+    if(!b.seeds){
+        // one seed per slot, and every slot holds the same crop
+        const seeds = new Box(FARM.slots, it => it instanceof CropSeedItem && seeds.items.every(o => !o || o === it || o.crop === it.crop));
+        seeds.slotMax = 1;
+        b.seeds = seeds;
+    }
+    if(!b.intake) b.intake = new Box(1, it => !!waterOf(it));
+    if(!b.plants) b.plants = new Array(FARM.slots).fill(null);
+    delete b.plant;
+}
+/** Matches b.plants to the seeds in the slots (a seed moved to another slot keeps its growth; one taken out is uprooted). True when something changed. */
+function syncFarmland(b){
+    const old = b.plants, next = new Array(b.seeds.size).fill(null);
+    let changed = false;
+    for(let k = 0; k < b.seeds.size; k++){
+        const it = b.seeds.getSlot(k);
+        if(it) next[k] = old.find(p => p && p.item === it) ?? Object.assign(newPlant(it.crop, 0), { item: it });
+        if(next[k] !== old[k]) changed = true;
+    }
+    b.plants = next;
+    return changed;
+}
+/** A farmland's seedlings: [{ k (slot), p (plant state), info (plantInfoOf) }]. */
+function farmSeedlings(b){
+    if(!b || !b.seeds) return [];
+    syncFarmland(b);
+    const out = [];
+    b.plants.forEach((p, k) => { const info = plantInfoOf(p); if(info) out.push({ k, p, info }); });
+    return out;
+}
+/** The crop growing on a farmland (from its seeds), or null. */
+const farmCrop = b => { const it = b && b.seeds && b.seeds.items.find(Boolean); return it ? it.crop : null; };
+/** Short state of one seedling ('sprout', 'stage 2', 'ripe', 'rotten'). */
+const seedlingState = info => T(info.rot ? 'seedling.rotten' : info.ripe ? 'seedling.ripe' : info.k < 0 ? 'seedling.sprout' : 'seedling.stage', { n: info.k + 1 });
+/**
+ * What a harvest of this farmland takes: the ripe and rotten seedlings; when there are none, the
+ * seedlings that would already give something (harvested early). { list, early }
+ */
+function farmHarvestPick(b){
+    const list = farmSeedlings(b);
+    const done = list.filter(e => e.info.ripe || e.info.rot);
+    if(done.length) return { list: done, early: false };
+    return { list: list.filter(e => e.info.stage && e.info.stage.yield[1] > 0), early: true };
+}
+/** The wheel / panel label of a farmland harvest, or null when there's nothing to harvest. */
+function farmHarvestLabel(b){
+    const { list, early } = farmHarvestPick(b);
+    if(!list.length) return null;
+    const name = nameOf(list[0].info.crop.id), rot = list.filter(e => e.info.rot).length, good = list.length - rot;
+    if(!good) return T('farm.clearRotten', { n: rot, crop: name });
+    return T('farm.harvestLabel', { n: good, crop: name, early: early ? T('farm.notRipe') : '', rot: rot ? T('farm.andClear', { n: rot }) : '' });
+}
+/** Harvest a farmland by hand (no hoe needed): every ripe / rotten seedling (or the early ones, see farmHarvestPick). */
+function harvestFarmland(x, y){
+    const b = blockAt(x, y);
+    if(!b || !b.seeds) return;
+    const { list } = farmHarvestPick(b);
+    if(!list.length){ notify(T('farm.nothingYet'), '#ffb070'); return; }
+    const crop = list[0].info.crop;
+    let n = 0, seeds = 0, ripe = 0;
+    for(const { info } of list){
+        if(info.rot || !info.stage) continue;
+        n += randInt(info.stage.yield[0], info.stage.yield[1]);
+        if(info.stage.yield[1] > 0 && skillChance('green_thumb', 0.1)) n += randInt(info.stage.yield[0], info.stage.yield[1]);   // Green Thumb: bonus
+        if(info.ripe){
+            ripe++;
+            if(Items.has(crop.seed) && crop.seed !== 'berry_bush') seeds += crop.regrow ? (Math.random() < 0.3 ? 1 : 0) : randInt(crop.seeds[0], crop.seeds[1]);
+        }
+    }
+    const drops = [[crop.produce, n], [crop.seed, seeds]];
+    if(!hasRoomFor(drops)){ notify(T('inv.full'), '#ff8a7a'); return; }
+    for(const [id, c] of drops) if(c > 0) giveItems(id, c);
+    for(const { k, p } of list){
+        if(crop.regrow){ p.age = 0; p.dry = 0; }      // perennials grow back from the same seed
+        else { b.seeds.setSlot(k, null); b.plants[k] = null; }   // the seed is used up, the slot is free again
+    }
+    Theaya.dirty.add(cellIndex(x, y));
+    const allRotten = list.every(e => e.info.rot);
+    notify(allRotten ? T('farm.clearedRotten', { crop: nameOf(crop.id) }) : T('gain.items', { items: dropsText(drops) }), allRotten ? '#d8c08a' : '#a6f0a0');
+    if(n > 0 && ripe) gainXp(XP.harvest * ripe, 'farming');
+}
+/** Pours the water slot's bucket / canteen into the soil, one unit every FARM.intakeSeconds while a whole unit fits under waterMax. */
+function farmIntake(b, dt){
+    const w = waterOf(b.intake.getSlot(0));
+    if(!w || w.value <= 0 || FARM.waterMax - b.water < FARM.bucketUnit){ b._intakeT = 0; return false; }
+    b._intakeT = (b._intakeT || 0) + dt;
+    if(b._intakeT < FARM.intakeSeconds) return false;
+    b._intakeT = 0;
+    w.value -= 1;
+    b.water += FARM.bucketUnit;
+    return true;
 }
 /** Crops with tier > 0 need a hoe of that tier to harvest. */
 function canHarvestTier(crop, item){
     if(crop.tier <= 0) return { ok:true };
     const m = isHoe(item) ? item.get('mining') : null;
     if(m && m.tier >= crop.tier) return { ok:true, tool:item };
-    return { ok:false, reason:`Needs a tier ${crop.tier}+ hoe${m ? ` (yours: tier ${m.tier})` : ''}` };
+    return { ok:false, reason: T('mine.needsTier', { tier: crop.tier, tool: nameOf('hoe') }) + (m ? T('tier.yours', { tier: m.tier }) : '') };
 }
 function harvestPlant(x, y){
     const b = blockAt(x, y), info = plantInfo(b);
@@ -3484,25 +3920,20 @@ function harvestPlant(x, y){
     const { crop } = info, held = heldItem();
     const tier = canHarvestTier(crop, held);
     if(!info.rot && !tier.ok){ notify(tier.reason, '#ff8a7a'); return; }
-    // a stack of crops (up to FARM.maxStack on farmland) gives every plant's share
-    const count = b.plant.count || 1;
+    // wild plants and berry bushes (farmland is harvested by hand, see harvestFarmland)
     let n = 0, seeds = 0;
-    for(let k = 0; k < count; k++){
-        if(!info.rot && info.stage) n += randInt(info.stage.yield[0], info.stage.yield[1]);
-        if(!info.rot && info.stage && info.stage.yield[1] > 0 && skillChance('green_thumb', 0.1)) n += randInt(info.stage.yield[0], info.stage.yield[1]);   // Green Thumb: bonus
-        if(info.ripe && Items.has(crop.seed) && crop.seed !== 'berry_bush') seeds += crop.regrow ? (Math.random() < 0.3 ? 1 : 0) : randInt(crop.seeds[0], crop.seeds[1]);
-    }
+    if(!info.rot && info.stage) n += randInt(info.stage.yield[0], info.stage.yield[1]);
+    if(!info.rot && info.stage && info.stage.yield[1] > 0 && skillChance('green_thumb', 0.1)) n += randInt(info.stage.yield[0], info.stage.yield[1]);   // Green Thumb: bonus
+    if(info.ripe && Items.has(crop.seed) && crop.seed !== 'berry_bush') seeds += crop.regrow ? (Math.random() < 0.3 ? 1 : 0) : randInt(crop.seeds[0], crop.seeds[1]);
     const drops = [[crop.produce, n], [crop.seed, seeds]];
-    if(!hasRoomFor(drops)){ notify('Inventory full!', '#ff8a7a'); return; }
+    if(!hasRoomFor(drops)){ notify(T('inv.full'), '#ff8a7a'); return; }
     if(tier.tool && n > 0) wearTool(tier.tool, 'plant');
     for(const [id, c] of drops) if(c > 0) giveItems(id, c);
-    const onFarm = b.id === 'farmland';
     if(crop.regrow) b.plant.age = 0;                 // perennials grow back
-    else if(onFarm) b.plant = null;                  // the farmland stays
     else setBlock(x, y, null);                       // a wild plant is gone
     Theaya.dirty.add(cellIndex(x, y));
-    notify(info.rot ? `Cleared the rotten ${prettify(crop.id)}.` : `+ ${dropsText(drops)}`, info.rot ? '#d8c08a' : '#a6f0a0');
-    if(n > 0 && info.ripe) gainXp(XP.harvest * count, 'farming');
+    notify(info.rot ? T('farm.clearedRotten', { crop: nameOf(crop.id) }) : T('gain.items', { items: dropsText(drops) }), info.rot ? '#d8c08a' : '#a6f0a0');
+    if(n > 0 && info.ripe) gainXp(XP.harvest, 'farming');
 }
 /** Ferns: always plant fibers, sometimes a crop seed (tier FARM.fernSeedMaxTier or lower). Then they're gone. */
 function harvestFern(x, y){
@@ -3511,71 +3942,91 @@ function harvestFern(x, y){
         const id = Crops.random(c => c.farm && c.tier <= FARM.fernSeedMaxTier && Items.has(c.seed));
         if(id) drops.push([Crops.get(id).seed, 1]);
     }
-    if(!hasRoomFor(drops)){ notify('Inventory full!', '#ff8a7a'); return; }
+    if(!hasRoomFor(drops)){ notify(T('inv.full'), '#ff8a7a'); return; }
     for(const [id, n] of drops) giveItems(id, n);
     setBlock(x, y, null);
-    notify('+ ' + dropsText(drops), '#a6f0a0');
+    notify(T('gain.items', { items: dropsText(drops) }), '#a6f0a0');
 }
 function harvest(x, y){
     const def = blockDefAt(x, y);
     if(!def) return;
     if(def.kind === 'fern') harvestFern(x, y);
+    else if(def.kind === 'farmland') harvestFarmland(x, y);
     else if(plantInfo(blockAt(x, y))) harvestPlant(x, y);
 }
+/** Plants one held seed in the farmland's first free seedling slot (the same as dropping it in a slot of its panel). */
 function plantSeed(x, y){
     const item = heldItem(), b = blockAt(x, y);
-    if(!(item instanceof CropSeedItem)){ notify('Hold seeds to plant.', '#ffb070'); return; }
-    if(!b || b.id !== 'farmland'){ notify('Seeds go on farmland (till grass with a hoe).', '#ffb070'); return; }
-    if(b.plant){
-        // more seeds of the same crop join a young stack (up to FARM.maxStack plants in one cell)
-        const why = stackReason(b, item);
-        if(why){ notify(why, '#ffb070'); return; }
-        b.plant.count = (b.plant.count || 1) + 1;
-        Theaya.dirty.add(cellIndex(x, y));
-        item.removeCount(1);
-        player.inventory._changed({ event:'plant' });
-        notify(`Added a ${prettify(item.crop)} seed: ${b.plant.count}/${FARM.maxStack} growing here`, '#a6f0a0');
-        gainXp(XP.plantRatio, 'farming');
-        return;
-    }
-    b.plant = newPlant(item.crop, 0);
-    Theaya.plants.add(cellIndex(x, y));
-    Theaya.dirty.add(cellIndex(x, y));
-    item.removeCount(1);
+    if(!(item instanceof CropSeedItem)){ notify(T('farm.holdSeeds'), '#ffb070'); return; }
+    if(!b || !b.seeds){ notify(T('farm.seedsGoOnFarmland'), '#ffb070'); return; }
+    const why = plantReason(b, item);
+    if(why){ notify(why, '#ffb070'); return; }
+    const k = b.seeds.items.findIndex(it => !it);
+    b.seeds.setSlot(k, item.split(1));
     player.inventory._changed({ event:'plant' });
-    const irrigated = nextToWater(cellIndex(x, y));
-    notify(`Planted ${prettify(item.crop)}${b.water <= 0 && !irrigated ? ' - the soil is dry, water it!' : ''}`, b.water <= 0 && !irrigated ? '#ffb070' : '#a6f0a0');
+    syncFarmland(b);
+    Theaya.dirty.add(cellIndex(x, y));
+    const n = b.seeds.items.filter(Boolean).length, dry = b.water <= 0 && !nextToWater(cellIndex(x, y));
+    notify(T('farm.planted', { crop: nameOf(item.crop), n, max: FARM.slots, dry: dry ? T('farm.plantedDry') : '' }), dry ? '#ffb070' : '#a6f0a0');
     gainXp(XP.plantRatio, 'farming');
 }
-/** Why the held seed can't join the crop already on this farmland (null = it can). */
-function stackReason(b, item){
-    const info = plantInfo(b);
-    if(!b.plant || !(item instanceof CropSeedItem)) return 'Hold seeds to plant.';
-    if(b.plant.crop !== item.crop) return `${prettify(b.plant.crop)} is growing here: seeds of one crop only.`;
-    if(info && (info.k >= 0 || info.rot)) return 'Too late to add seeds: the crop has grown already.';
-    if((b.plant.count || 1) >= FARM.maxStack) return `This farmland is full (${FARM.maxStack}/${FARM.maxStack}).`;
+/** Why this seed can't be planted on this farmland (null = it can). */
+function plantReason(b, item){
+    if(!(item instanceof CropSeedItem)) return T('farm.holdSeeds');
+    const crop = farmCrop(b);
+    if(crop && crop !== item.crop) return T('farm.oneCrop', { crop: nameOf(crop) });
+    if(!b.seeds.items.some(it => !it)) return T('farm.full', { n: FARM.slots });
     return null;
 }
 function waterFarmland(x, y){
     const item = heldItem(), b = blockAt(x, y), w = waterOf(item);
-    if(!(item instanceof Bucket)){ notify('Hold a bucket of water.', '#ffb070'); return; }
+    if(!(item instanceof Bucket)){ notify(T('water.holdBucketOfWater'), '#ffb070'); return; }
     if(!b || b.id !== 'farmland') return;
-    if(w.empty){ notify('The bucket is empty. Fill it at water or a puddle.', '#ffb070'); return; }
+    if(w.empty){ notify(T('water.bucketEmpty'), '#ffb070'); return; }
     // Fills up to waterMax. Pouring on farmland that's already full floods it (up to FARM.floodMax).
     const flood = b.water >= FARM.waterMax, cap = flood ? FARM.floodMax : FARM.waterMax;
     const room = cap - b.water;
-    if(room <= 0){ notify(`This farmland can't hold any more water.`, '#ffb070'); return; }
+    if(room <= 0){ notify(T('farm.cantHoldMore'), '#ffb070'); return; }
     const units = Math.min(w.value, Math.ceil(room / FARM.bucketUnit));
     w.value -= units;
     b.water = Math.min(cap, b.water + units * FARM.bucketUnit);
     Theaya.dirty.add(cellIndex(x, y));
     const pond = FARM.waterMax * FARM.floodAt;
-    notify(flood ? `Flooded: ${Math.round(b.water)}/${FARM.waterMax}${b.water > pond ? ` - kept over ${pond} for half a day it becomes a water source` : ` (over ${pond} for half a day makes a pond)`}`
-                 : `Watered: ${Math.round(b.water)}/${FARM.waterMax} (bucket ${w.value}/${w.capacity})`, '#8fd0ff');
+    notify(flood ? T('farm.flooded', { w: Math.round(b.water), max: FARM.waterMax, note: T(b.water > pond ? 'farm.floodNoteOver' : 'farm.floodNoteUnder', { pond }) })
+                 : T('farm.watered', { w: Math.round(b.water), max: FARM.waterMax, v: w.value, c: w.capacity }), '#8fd0ff');
+}
+/**
+ * Unflood: scoop the water above waterMax back into the held bucket, one bucket unit (FARM.bucketUnit) at a time.
+ * The last unit can take the soil a little under waterMax (water is never created or lost).
+ */
+function unfloodFarmland(x, y){
+    const item = heldItem(), b = blockAt(x, y), w = waterOf(item);
+    if(!(item instanceof Bucket)){ notify(T('water.holdBucket'), '#ffb070'); return; }
+    if(!b || b.id !== 'farmland') return;
+    const why = unfloodReason(b, w);
+    if(why){ notify(why, '#ffb070'); return; }
+    const over = b.water - FARM.waterMax;
+    const units = Math.min(w.capacity - w.value, Math.ceil(over / FARM.bucketUnit), Math.floor(b.water / FARM.bucketUnit));
+    w.value += units;
+    b.water = Math.max(0, b.water - units * FARM.bucketUnit);
+    if(b.water <= FARM.waterMax * FARM.floodAt) b.flood = 0;   // no longer on its way to becoming a pond
+    Theaya.dirty.add(cellIndex(x, y));
+    notify(T('farm.scooped', { n: units, s: units > 1 ? 's' : '', w: Math.round(b.water), max: FARM.waterMax, still: b.water > FARM.waterMax ? T('farm.stillFlooded') : '', v: w.value, c: w.capacity }), '#8fd0ff');
+}
+/** Why the bucket can't unflood this farmland (null = it can). */
+function unfloodReason(b, w){
+    if(!w) return T('water.holdBucketShort');
+    if(b.water <= FARM.waterMax) return T('farm.notFlooded');
+    if(w.full) return T('water.bucketFull');
+    if(b.water < FARM.bucketUnit) return T('farm.notEnoughToScoop');
+    return null;
 }
 /** Farmland that stayed flooded long enough becomes a water cell (a pond you made). */
 function floodToWater(i){
-    const { x, y } = cellXY(i);
+    const { x, y } = cellXY(i), b = Theaya.blocks[i];
+    // the bucket / canteen in its water slot comes back to you (the seeds drown with the soil)
+    const kept = b && b.intake && b.intake.getSlot(0);
+    if(kept && player.inventory.give(kept) === 0) notify(T('farm.bucketBack', { item: nameOf(kept.id) }), '#8fd0ff');
     setBlock(x, y, null);
     Theaya.mud.delete(i);
     Theaya.water[i] = WATER_UNITS;
@@ -3584,38 +4035,68 @@ function floodToWater(i){
     if(!Theaya.waterCells.includes(i)) Theaya.waterCells.push(i);
     Theaya.dried.delete(i);
     Theaya.origin[i] = null;
-    notify('Flooded farmland turned into a water source!', '#8fd0ff');
+    notify(T('farm.becamePond'), '#8fd0ff');
 }
-/** Grows plants and drains farmland water (every tick). */
-function tickPlants(dt){
-    const days = Clock.dayDelta(dt), drain = Weather.param('farmDrain', 1);
-    for(const i of Theaya.plants){
-        const b = Theaya.blocks[i];
-        if(!b){ Theaya.plants.delete(i); continue; }
-        const farm = b.id === 'farmland', p = b.plant;
-        const crop = p ? Crops.get(p.crop) : null;
-        if(farm){
-            const { x, y } = cellXY(i);
-            const heat = temperatureAt(x, y) > SURVIVAL.hotAbove ? 1.5 : 1;
-            const over = b.water > FARM.waterMax ? FARM.overflowDrain : 0;   // flood water soaks away faster
-            const stack = p ? 1 + FARM.stackThirst * ((p.count || 1) - 1) : 1;   // a stack of crops drinks more
-            b.water = Math.max(0, b.water - ((crop ? crop.water * stack : FARM.evaporate) + over) * days * drain * heat * (1 - 0.08 * skillLevel('green_thumb')));
-            // next to a water cell the soil is irrigated: it stays full, no bucket needed
-            if(nextToWater(i) && b.water < FARM.waterMax) b.water = FARM.waterMax;
-            // kept flooded (over floodAt x waterMax) for floodDays: it becomes a water source
-            if(b.water > FARM.waterMax * FARM.floodAt){
-                b.flood = (b.flood || 0) + days;
-                if(b.flood >= FARM.floodDays){ floodToWater(i); continue; }
-            } else b.flood = 0;
-            const lvl = Math.ceil(b.water / (FARM.waterMax / 4));
-            if(lvl !== b._lvl){ b._lvl = lvl; Theaya.dirty.add(i); }
+/** The water cell next to cell i that irrigates it (the one with the most units left), or -1 when they're all dry. */
+function irrigationSource(i){
+    let best = -1;
+    for(const n of neighborIdx(i)) if(isWaterCell(n) && (Theaya.water[n] ?? 0) > 0 && (best < 0 || Theaya.water[n] > Theaya.water[best])) best = n;
+    return best;
+}
+/** Take one unit out of a water cell (it refills WATER_REFILL_SECONDS after running dry, like scooping it). */
+function takeWaterUnit(n){
+    Theaya.water[n] = Math.max(0, (Theaya.water[n] ?? 0) - 1);
+    if(Theaya.water[n] <= 0 && WATER_REFILL_SECONDS > 0) Theaya.refilling.set(n, sceneTime() + WATER_REFILL_SECONDS);
+    Theaya.dirty.add(n);
+}
+/** Irrigation text for farmland cell i: '' (not next to water), 'irrigated (water 12/15)' or 'irrigation dry'. */
+function irrigationText(i){
+    if(!nextToWater(i)) return '';
+    const s = irrigationSource(i);
+    return s < 0 ? T('irrigation.dry') : T('irrigation.on', { n: Theaya.water[s], max: WATER_UNITS });
+}
+/** One farmland, every tick: its water slot pours in, the soil drains, and each seedling grows (or dries out) on its own. */
+function tickFarmland(i, b, dt, days, drain){
+    if(!b.seeds) initFarmland(b);
+    if(syncFarmland(b)) Theaya.dirty.add(i);   // seeds put in / taken out through the panel
+    farmIntake(b, dt);
+    const seedlings = farmSeedlings(b), living = seedlings.filter(e => !e.info.rot);
+    const { x, y } = cellXY(i);
+    const heat = temperatureAt(x, y) > SURVIVAL.hotAbove ? 1.5 : 1;
+    const over = b.water > FARM.waterMax ? FARM.overflowDrain : 0;   // flood water soaks away faster
+    // growing seedlings drink (each extra one adds FARM.stackThirst), bare soil just evaporates
+    const thirst = living.length ? living[0].info.crop.water * (1 + FARM.stackThirst * (living.length - 1)) : FARM.evaporate;
+    b.water = Math.max(0, b.water - (thirst + over) * days * drain * heat * (1 - 0.08 * skillLevel('green_thumb')));
+    // next to a water cell the soil is irrigated: it stays full, no bucket needed. While crops grow it slowly
+    // drinks the water cell (1 unit per FARM.irrigationPerUnit topped up); a dry water cell can't irrigate.
+    if(nextToWater(i) && b.water < FARM.waterMax){
+        const need = FARM.waterMax - b.water;
+        if(!living.length) b.water = FARM.waterMax;                 // bare soil: just stays damp
+        else if(irrigationSource(i) >= 0){
+            b.water = FARM.waterMax;
+            b._irrig = (b._irrig || 0) + need;
+            while(b._irrig >= FARM.irrigationPerUnit){
+                const s = irrigationSource(i);
+                if(s < 0) break;
+                takeWaterUnit(s);
+                b._irrig -= FARM.irrigationPerUnit;
+            }
         }
-        if(!crop) continue;
-        const before = Crops.stageAt(crop, p.age);
-        if(farm && b.water <= 0){
+    }
+    // kept flooded (over floodAt x waterMax) for floodDays: it becomes a water source
+    if(b.water > FARM.waterMax * FARM.floodAt){
+        b.flood = (b.flood || 0) + days;
+        if(b.flood >= FARM.floodDays){ floodToWater(i); return; }
+    } else b.flood = 0;
+    const lvl = Math.ceil(b.water / (FARM.waterMax / 4));
+    if(lvl !== b._lvl){ b._lvl = lvl; Theaya.dirty.add(i); }
+    for(const { k, p, info } of seedlings){
+        const crop = info.crop, before = info.k;
+        if(b.water <= 0){
             p.dry += days;
             if(p.dry >= FARM.dryDays && p.age < crop.rotAge){   // withered
-                if(crop.rotAge === Infinity) b.plant = null; else p.age = crop.rotAge;
+                if(crop.rotAge === Infinity){ b.seeds.setSlot(k, null); b.plants[k] = null; }
+                else p.age = crop.rotAge;
                 Theaya.dirty.add(i);
                 continue;
             }
@@ -3623,7 +4104,23 @@ function tickPlants(dt){
             p.dry = 0;
             p.age += days;
         }
-        if(!farm && p.age >= crop.rotAge + 1) p.age = 0;   // wild plants rot away and sprout again
+        if(Crops.stageAt(crop, p.age) !== before) Theaya.dirty.add(i);
+    }
+}
+/** Grows plants and drains farmland water (every tick). */
+function tickPlants(dt){
+    const days = Clock.dayDelta(dt), drain = Weather.param('farmDrain', 1);
+    for(const i of Theaya.plants){
+        const b = Theaya.blocks[i];
+        if(!b){ Theaya.plants.delete(i); continue; }
+        if(b.id === 'farmland'){ tickFarmland(i, b, dt, days, drain); continue; }
+        // wild plants and berry bushes: grow without water
+        const p = b.plant, crop = p ? Crops.get(p.crop) : null;
+        if(!crop) continue;
+        const before = Crops.stageAt(crop, p.age);
+        p.dry = 0;
+        p.age += days;
+        if(p.age >= crop.rotAge + 1) p.age = 0;   // wild plants rot away and sprout again
         if(Crops.stageAt(crop, p.age) !== before) Theaya.dirty.add(i);
     }
 }
@@ -3631,12 +4128,12 @@ function tickPlants(dt){
 /* ----- Placing / water / using items ----- */
 function placeBlock(x, y){
     const item = heldItem();
-    if(!(item instanceof BlockItem)){ notify('Hold a block item to place it.', '#ffb070'); return; }
+    if(!(item instanceof BlockItem)){ notify(T('place.holdBlock'), '#ffb070'); return; }
     const pc = playerCell(), g = groundAt(x, y), cur = blockDefAt(x, y), def = Blocks.get(item.block);
     if(def && def.kind === 'boat'){   // boats go on water, nothing else does
-        if(!g || !g.water || cur){ notify('A boat goes on a water cell.', '#ff8a7a'); return; }
-    } else if((cur && !cur.replaceable) || !g || !g.passable || !def){ notify("Can't build there.", '#ff8a7a'); return; }
-    if(pc && pc.x === x && pc.y === y && blocksMover(def, 'player')){ notify("You're standing there.", '#ff8a7a'); return; }
+        if(!g || !g.water || cur){ notify(T('place.boatOnWater'), '#ff8a7a'); return; }
+    } else if((cur && !cur.replaceable) || !g || !g.passable || !def){ notify(T('place.cantBuild'), '#ff8a7a'); return; }
+    if(pc && pc.x === x && pc.y === y && blocksMover(def, 'player')){ notify(T('place.standingThere'), '#ff8a7a'); return; }
     setBlock(x, y, item.block, def.placeState ? def.placeState() : {});
     item.removeCount(1);
     player.inventory._changed({ event:'place' });
@@ -3646,17 +4143,17 @@ function placeBlock(x, y){
  * can be dug out. It becomes a sand floor (a walkable sand block) and never refills. */
 function canFillWaterCell(x, y, tool){
     const g = groundAt(x, y), i = cellIndex(x, y);
-    if(!g || !g.water) return { ok:false, reason:'Not a water cell' };
-    if(!hasToolClass(tool ?? heldItem(), 'shovel')) return { ok:false, reason:'Needs a shovel' };
-    if((Theaya.water[i] ?? 0) > 0) return { ok:false, reason:'Empty the water first (use a canteen or bucket)' };
-    if(blockAt(x, y)) return { ok:false, reason:'Something is in the way' };
+    if(!g || !g.water) return { ok:false, reason: T('fill.notWater') };
+    if(!hasToolClass(tool ?? heldItem(), 'shovel')) return { ok:false, reason: T('fill.needsShovel') };
+    if((Theaya.water[i] ?? 0) > 0) return { ok:false, reason: T('fill.emptyFirst') };
+    if(blockAt(x, y)) return { ok:false, reason: T('cell.inTheWay') };
     return { ok:true };
 }
 const fillWaterTime = tool => Math.max(0.4, MINE_TIME_SCALE * (Blocks.get('sand')?.hardness ?? 0.35) * 1.2 / (hasToolClass(tool, 'shovel') ? tool.get('mining').speed : HAND_SPEED));
 function startFillWater(x, y){
     const tool = heldItem(), can = canFillWaterCell(x, y, tool);
     if(!can.ok){ notify(can.reason, '#ff8a7a'); return; }
-    startJob({ x, y, time: fillWaterTime(tool), tool, verb:'Fill in', check: () => canFillWaterCell(x, y, tool).ok, done: finishFillWater });
+    startJob({ x, y, time: fillWaterTime(tool), tool, verb: T('verb.fillIn'), check: () => canFillWaterCell(x, y, tool).ok, done: finishFillWater });
 }
 function finishFillWater(j){
     const { x, y } = j, i = cellIndex(x, y);
@@ -3668,7 +4165,7 @@ function finishFillWater(j){
     setBlock(x, y, 'sand');
     Theaya.origin[i] = null;
     Theaya.dirty.add(i);
-    notify('Filled in the empty water cell with sand.', '#e8d28a');
+    notify(T('fill.done'), '#e8d28a');
 }
 
 /** Water you can scoop from a cell: { kind:'water'|'puddle', left, max } or null. */
@@ -3681,10 +4178,10 @@ function waterSourceAt(x, y){
 /** Fill the held canteen / bucket from a water cell or a puddle. */
 function fillContainer(x, y){
     const item = heldItem(), i = cellIndex(x, y), w = waterOf(item), src = waterSourceAt(x, y);
-    if(!w){ notify('Hold a canteen or a bucket.', '#ffb070'); return; }
+    if(!w){ notify(T('water.holdContainer'), '#ffb070'); return; }
     if(!src) return;
-    if(src.left <= 0){ notify('This water source is dry.', '#ffb070'); return; }
-    if(w.full){ notify(`The ${prettify(item.id)} is already full.`, '#ffb070'); return; }
+    if(src.left <= 0){ notify(T('water.sourceDry'), '#ffb070'); return; }
+    if(w.full){ notify(T('water.alreadyFull', { item: nameOf(item.id) }), '#ffb070'); return; }
     const n = Math.min(src.left, w.capacity - w.value);
     w.value += n;
     if(src.kind === 'water'){
@@ -3693,31 +4190,36 @@ function fillContainer(x, y){
     } else if(src.left - n > 0) Theaya.puddles.set(i, src.left - n);
     else Theaya.puddles.delete(i);
     Theaya.dirty.add(i);
-    notify(`${prettify(item.id)} ${w.value}/${w.capacity} (${src.left - n} left in this ${src.kind === 'water' ? 'source' : 'puddle'})`, '#8fd0ff');
+    notify(T(src.kind === 'water' ? 'water.filledFromSource' : 'water.filledFromPuddle', { item: nameOf(item.id), v: w.value, c: w.capacity, left: src.left - n }), '#8fd0ff');
 }
 /** Kept for older code: fillCanteen(x, y) = fillContainer(x, y). */
 function fillCanteen(x, y){ fillContainer(x, y); }
 
 function useLabel(item){
     if(!item) return null;
-    if(item instanceof Canteen) return item.water.empty ? null : `Drink (${item.water.value}/${item.water.capacity})`;
-    if(item.has && item.has('consume')) return `Eat ${prettify(item.id)}${item.has('poisonous') ? ' (raw: may poison)' : ''}`;
-    if(armorSlotOf(item)) return `Wear ${prettify(item.id)}`;
-    if(item instanceof BlockItem && Blocks.get(item.block) && Blocks.get(item.block).light) return `Place ${prettify(item.id)} here`;
+    if(item instanceof Canteen) return item.water.empty ? null : T('use.drinkWater', { v: item.water.value, c: item.water.capacity });
+    if(item.has && item.has('consume')) return T(item.has('quench') ? 'use.drink' : 'use.eat', { item: nameOf(item.id) }) + (item.has('poisonous') ? T('use.rawMayPoison') : '');
+    if(armorSlotOf(item)) return T('use.wear', { item: nameOf(item.id) });
+    if(item instanceof BlockItem && Blocks.get(item.block) && Blocks.get(item.block).light) return T('use.placeHere', { item: nameOf(item.id) });
     return null;
 }
 /** F key / "Eat"/"Drink" action: use the held item on yourself. */
 function useHeld(){
-    const item = heldItem(), p = player;
-    if(!item){ notify('Nothing in hand.', '#ffb070'); return; }
+    const inv = player.inventory;
+    useItem(heldItem(), slotRef(inv, inv.hotbarSlot(GameUI.hotbar)));
+}
+/** Use an item on yourself: eat / drink it, wear it, or put a torch down. ref = the slot it's in. */
+function useItem(item, ref){
+    const p = player, box = ref ? ref.box : p.inventory;
+    if(!item){ notify(T('use.nothingInHand'), '#ffb070'); return; }
     if(item instanceof Canteen){
-        if(item.water.empty){ notify('The canteen is empty. Fill it at a water cell or a puddle.', '#ffb070'); return; }
+        if(item.water.empty){ notify(T('use.canteenEmpty'), '#ffb070'); return; }
         item.water.value--;
         p.thirst = Math.min(100, p.thirst + SURVIVAL.sip);
-        notify(`Drank water (thirst ${Math.round(p.thirst)})`, '#8fd0ff');
+        notify(T('use.drankWater', { thirst: Math.round(p.thirst) }), '#8fd0ff');
         return;
     }
-    if(item instanceof Bucket){ notify('Bucket water is for farmland. Drink from a canteen.', '#ffb070'); return; }
+    if(item instanceof Bucket){ notify(T('use.bucketNotForDrinking'), '#ffb070'); return; }
     if(item.has('consume')){
         const r = item.consume(p);
         p.hunger = Math.min(100, p.hunger + (r.hunger || 0));
@@ -3728,62 +4230,76 @@ function useHeld(){
             const cur = p.regenBuff;
             p.regenBuff = { rate: Math.max(regenC.rate, cur ? cur.rate : 0), left: Math.max(regenC.seconds, cur ? cur.left : 0) };
         }
+        const quench = item.get('quench'), ret = item.get('returnsItem');
+        if(quench) p.thirst = Math.min(100, p.thirst + quench.amount);   // a drink (milk)
         item.removeCount(1);
-        p.inventory._changed({ event:'consume' });
+        if(box === p.inventory) p.inventory._changed({ event:'consume' }); else box.changed({ event:'consume' });
+        if(ret && ret.itemId && Items.has(ret.itemId)){   // the container comes back (milk bucket -> empty bucket), in the same slot when it's free
+            if(ref && !box.getSlot(ref.i)){ box.setSlot(ref.i, Items.create(ret.itemId, 1)); if(box === p.inventory) p.inventory._changed({ event:'return' }); else box.changed(); }
+            else if(giveItems(ret.itemId, 1) > 0) notify(T('use.noRoomFor', { item: nameOf(ret.itemId) }), '#ffb070');
+        }
+        if(quench){ notify(T('use.drank', { item: nameOf(item.id), thirst: Math.round(p.thirst), hunger: Math.round(p.hunger) }), '#8fd0ff'); return; }
         if(poison && Math.random() < poison.chance){
             // a second bad meal stacks the time, not the damage
             const pm = poisonSkillMult();   // Steel Stomach: shorter, weaker poison
             p.poison = { left: (p.poison ? p.poison.left : 0) + poison.seconds * pm, dps: Math.max(poison.dps * pm, p.poison ? p.poison.dps : 0) };
-            notify(`Ate ${prettify(item.id)}... you feel sick! Poisoned for ${Math.ceil(p.poison.left)}s. Cook meat in a cooking pot.`, '#c6ff6a');
+            notify(T('use.atePoisoned', { item: nameOf(item.id), secs: Math.ceil(p.poison.left) }), '#c6ff6a');
             return;
         }
-        notify(`Ate ${prettify(item.id)} (hunger ${Math.round(p.hunger)})${r.health ? `, +${r.health} health` : ''}${regenC ? `, regenerating +${regenC.rate}/s for ${regenC.seconds}s` : ''}`, '#a6f0a0');
+        notify(T('use.ate', { item: nameOf(item.id), hunger: Math.round(p.hunger) })
+            + (r.health ? T('use.ateHealth', { hp: r.health }) : '') + (regenC ? T('use.ateRegen', { rate: regenC.rate, secs: regenC.seconds }) : ''), '#a6f0a0');
         return;
     }
-    if(armorSlotOf(item)){ equipArmor(slotRef(p.inventory, p.inventory.hotbarSlot(GameUI.hotbar))); return; }
+    if(armorSlotOf(item)){ equipArmor(ref); return; }
     if(item instanceof BlockItem && Blocks.get(item.block) && Blocks.get(item.block).light){   // torch: put it down at your feet
         const pc = playerCell();
         if(pc) placeBlock(pc.x, pc.y);
         return;
     }
-    notify(`${prettify(item.id)} can't be used on yourself.`, '#ffb070');
+    notify(T('use.cantUse', { item: nameOf(item.id) }), '#ffb070');
 }
 
 function inspectCell(x, y){
     const i = cellIndex(x, y), b = blockAt(x, y), def = blockDefAt(x, y), g = groundAt(x, y);
-    const biome = Theaya.biome[i] === 'cave' ? `Cave (in ${prettify(Theaya.parentBiome[i])})` : prettify(Theaya.biome[i]);
-    const parts = [];
+    const biome = Theaya.biome[i] === 'cave' ? T('inspect.caveIn', { biome: nameOf(Theaya.parentBiome[i]) }) : nameOf(Theaya.biome[i]);
+    const parts = [], sep = T('list.sep');
     if(def){
-        let t = `${def.name}: `;
-        if(def.hardness >= 10) t += 'unbreakable';
-        else t += `hardness ${def.hardness}` + (def.tier > 0 ? `, needs a tier ${def.tier}+ ${def.tool}` : ', breakable by hand');
-        if(def.grow) t += ', growing';
-        if(!def.solid) t += ', you can walk over it';
+        let t = T('inspect.blockName', { name: def.name });
+        if(def.hardness >= 10) t += T('inspect.unbreakable');
+        else t += T('inspect.hardness', { h: def.hardness }) + (def.tier > 0 ? sep + T('mine.needsTier', { tier: def.tier, tool: nameOf(def.tool) }) : sep + T('inspect.byHand'));
+        if(def.grow) t += sep + T('inspect.growing');
+        if(!def.solid) t += sep + T('inspect.walkOver');
         parts.push(t);
         if(def.kind === 'farmland'){
-            parts.push(`water ${Math.round(b.water)}/${FARM.waterMax}${nextToWater(i) ? ' (irrigated by the water next to it)' : ''}`);
-            if(b.flood > 0) parts.push(`flooded for ${(b.flood / FARM.floodDays * 100).toFixed(0)}% of the time it takes to become a pond`);
+            const over = Math.max(0, Math.round(b.water - FARM.waterMax)), irr = irrigationText(i);
+            parts.push(T('inspect.farmWater', { w: Math.round(b.water), max: FARM.waterMax }) + (over ? T('inspect.overTop', { n: over }) : '') + (irr ? T('inspect.paren', { text: irr }) : ''));
+            if(b.flood > 0) parts.push(T('inspect.floodedFor', { pct: (b.flood / FARM.floodDays * 100).toFixed(0) }));
+            const sl = farmSeedlings(b);
+            if(sl.length) parts.push(T('inspect.seedlings', { crop: nameOf(sl[0].info.crop.id), n: sl.length, max: FARM.slots,
+                list: sl.map(e => seedlingState(e.info) + (e.p.dry > 0 ? T('inspect.dry') : '')).join(sep) }));
+            else parts.push(T('inspect.noSeedlings', { max: FARM.slots }));
+            const iw = waterOf(b.intake && b.intake.getSlot(0));
+            if(iw) parts.push(T('inspect.waterSlot', { item: nameOf(b.intake.getSlot(0).id), v: iw.value, c: iw.capacity }));
         }
-        if(def.kind === 'ore_heart') parts.push(`slowly grows ${prettify(def.material)} ore in the cave around it`);
-        if(def.safe) parts.push(`no monsters spawn within ${def.safe} cells`);
-        if(b.cracks > 0) parts.push(`${Math.round(b.cracks * 100)}% broken by monsters`);
+        if(def.kind === 'ore_heart') parts.push(T('inspect.oreHeart', { ore: nameOf(def.material) }));
+        if(def.safe) parts.push(T('inspect.safe', { n: def.safe }));
+        if(b.cracks > 0) parts.push(T('inspect.cracked', { pct: Math.round(b.cracks * 100) }));
         const info = plantInfo(b);
         if(info){
-            const state = info.rot ? 'rotten' : info.ripe ? 'ripe' : info.k < 0 ? 'sprout' : `stage ${info.k + 1}`;
-            parts.push(`${prettify(info.crop.id)}${b.id === 'farmland' ? ` x${b.plant.count || 1}/${FARM.maxStack}` : ''}: ${state}, ${b.plant.age.toFixed(2)} days old${b.plant.dry > 0 ? ', DRY' : ''}`);
-            if(info.crop.tier > 0) parts.push(`harvest needs a tier ${info.crop.tier}+ hoe`);
+            parts.push(T('inspect.plant', { crop: nameOf(info.crop.id), state: seedlingState(info), days: b.plant.age.toFixed(2) }) + (b.plant.dry > 0 ? T('inspect.plantDry') : ''));
+            if(info.crop.tier > 0) parts.push(T('inspect.harvestNeedsHoe', { tier: info.crop.tier }));
         }
         if(def.station === 'forge' || def.station === 'pot' || def.station === 'rack') parts.push(b.status);
-        if(def.kind === 'boat') parts.push(boatHasPlayer(i) ? 'you are sailing it' : 'step onto it to sail');
+        if(def.kind === 'boat') parts.push(T(boatHasPlayer(i) ? 'inspect.boatSailing' : 'inspect.boatStep'));
     } else if(g && g.water){
-        parts.push(`Water: ${Theaya.water[i]}/${WATER_UNITS} canteen fills left`);
+        parts.push(T('inspect.waterCell', { n: Theaya.water[i], max: WATER_UNITS }));
     } else {
         parts.push(g ? g.name : '?');
-        if(Theaya.dried.has(i)) parts.push('dried-up water');
+        if(Theaya.dried.has(i)) parts.push(T('inspect.driedWater'));
     }
-    if(Theaya.puddles.has(i)) parts.push(`puddle (${Theaya.puddles.get(i)} water)`);
-    if(Theaya.mud.has(i)) parts.push('muddy');
-    if(Theaya.snow.has(i)) parts.push('snowy');
+    if(Theaya.puddles.has(i)) parts.push(T('inspect.puddle', { n: Theaya.puddles.get(i) }));
+    if(Theaya.mud.has(i)) parts.push(T('inspect.muddy'));
+    if(Theaya.snow.has(i)) parts.push(T('inspect.snowy'));
     parts.push(`${Math.round(temperatureAt(x, y))}°C`);
     parts.push(biome);
     // one line per fact; stays 8 s, but fades out as soon as the player walks away from where they inspected it
@@ -3797,26 +4313,54 @@ function inspectCell(x, y){
  * `warn` says the player walks to the cell first.
  */
 /** Why a creature action can't be done right now (null = it can). act: { display, require:{ item }, result:{ item, count }, cooldown (s) }. */
-function creatureActionReason(m, key, act){
-    const need = act.require && (act.require.item ?? act.require.id);
-    if(need && player.inventory.countOf(need) < 1) return `Needs ${prettify(need)}`;
-    const wait = ((m.actionAt && m.actionAt[key]) || 0) - Mobs.now;
-    if(wait > 0) return `Wait ${Math.ceil(wait)}s`;
-    const res = act.result && (act.result.item ?? act.result.id);
-    if(res && roomForItems(res) < (act.result.count ?? 1) && !(need && need === res)) return 'Inventory full';
+/**
+ * The inventory stack a creature action uses (its `require`), or null. require.empty = only an
+ * empty canteen / bucket counts (milking needs an empty bucket, so no water is lost).
+ */
+function actionItem(act){
+    const r = act.require, need = r && (r.item ?? r.id), inv = player.inventory;
+    if(!need) return null;
+    for(let k = 1; k <= inv.slots; k++){
+        const it = inv[k];
+        if(!it || it.id !== need || it.count < (r.count ?? 1)) continue;
+        if(r.empty){ const w = waterOf(it); if(w && !w.empty) continue; }
+        return it;
+    }
     return null;
+}
+function creatureActionReason(m, key, act){
+    const need = act.require && (act.require.item ?? act.require.id), it = actionItem(act);
+    if(need && !it){
+        if(act.require.empty && player.inventory.countOf(need) > 0) return T('action.needsEmptyDump', { item: nameOf(need) });
+        return T(act.require.empty ? 'action.needsEmpty' : 'action.needs', { item: nameOf(need) });
+    }
+    const wait = ((m.actionAt && m.actionAt[key]) || 0) - Mobs.now;
+    if(wait > 0) return T('action.wait', { secs: Math.ceil(wait) });
+    const res = act.result && (act.result.item ?? act.result.id);
+    const frees = it && act.require.consume !== false && it.count <= (act.require.count ?? 1);   // using it up frees its slot
+    if(res && roomForItems(res) < (act.result.count ?? 1) && !(need && need === res) && !frees) return T('action.invFull');
+    return null;
+}
+/** A creature action's wheel label: THEAYA_TEXT 'action.<creature>.<key>' ({creature} = its name), else the spec's `display` (@ = the creature). */
+function creatureActionLabel(m, key, act){
+    const k = `action.${m.type}.${key}`;
+    if(THEAYA_TEXT[k]) return T(k, { creature: m.def.name });
+    return (act.display ?? nameOf(key)).replace('@', m.def.name);
 }
 function doCreatureAction(m, key, act){
     if(!m.alive) return;
     const pc = playerCell();
-    if(!pc || hexDist(pc, m) > 1){ notify(`Stay next to the ${m.def.name.toLowerCase()}.`, '#ffb070'); return; }
+    if(!pc || hexDist(pc, m) > 1){ notify(T('action.stayNext', { creature: m.def.name }), '#ffb070'); return; }
     const why = creatureActionReason(m, key, act);
     if(why){ notify(why, '#ffb070'); return; }
     const need = act.require && (act.require.item ?? act.require.id), res = act.result && (act.result.item ?? act.result.id);
-    if(need && act.require.consume !== false) player.inventory.take(need, act.require.count ?? 1);
+    if(need && act.require.consume !== false){   // use up the exact stack actionItem found (an empty bucket, not a full one)
+        actionItem(act).removeCount(act.require.count ?? 1);
+        player.inventory._changed({ event:'creatureAction' });
+    }
     if(res) giveItems(res, act.result.count ?? 1);
     if(act.cooldown){ m.actionAt = m.actionAt || {}; m.actionAt[key] = Mobs.now + act.cooldown; }
-    notify(res ? `+ ${act.result.count ?? 1} ${prettify(res)}` : `${prettify(key)} done`, '#a6f0a0');
+    notify(res ? T('gain.items', { items: T('item.count', { n: act.result.count ?? 1, name: nameOf(res) }) }) : T('action.done', { action: nameOf(key) }), '#a6f0a0');
 }
 
 function buildActions(x, y){
@@ -3832,26 +4376,28 @@ function buildActions(x, y){
     const getApproach = () => approach !== undefined ? approach : (approach = findApproach(cell));
 
     // An action done from a neighbouring cell. Walks there first when needed.
+    // extra.id = a stable name for the option (labels change with the language; the tutorial finds options by id)
     const nearAction = (label, run, extra = {}) => {
-        if(extra.enabled === false) return { label, enabled:false, reason: extra.reason };
-        if(d === 1) return { label, enabled:true, run: () => doNear(cell, run) };
-        if(d === 0 && extra.here){ return { label, enabled:true, run } }
+        const id = extra.id;
+        if(extra.enabled === false) return { id, label, enabled:false, reason: extra.reason };
+        if(d === 1) return { id, label, enabled:true, run: () => doNear(cell, run) };
+        if(d === 0 && extra.here){ return { id, label, enabled:true, run } }
         const ap = getApproach();
-        if(!ap) return { label, enabled:false, reason:"Can't reach this cell" };
+        if(!ap) return { id, label, enabled:false, reason: T('wheel.cantReach') };
         const steps = ap.path.length;
-        return { label, enabled:true, warn:`Walks there first (${steps} cell${steps === 1 ? '' : 's'})`, run: () => doNear(cell, run) };
+        return { id, label, enabled:true, warn: T('wheel.walksFirst', { n: steps, s: steps === 1 ? '' : 's' }), run: () => doNear(cell, run) };
     };
 
     // Main action: move
     if(d > 0){
         if(isPassable(x, y)){
             const path = areaZones.home.findPath(pc, cell, pathOpts());
-            opts.push(path ? { label:'Move here', enabled:true, run: () => walkTo(x, y) }
-                           : { label:'Move here', enabled:false, reason:'No path' });
+            opts.push(path ? { label: T('wheel.moveHere'), enabled:true, run: () => walkTo(x, y) }
+                           : { label: T('wheel.moveHere'), enabled:false, reason: T('wheel.noPath') });
         } else if(d > 1){
             const ap = getApproach();
-            opts.push(ap ? { label:'Move next to it', enabled:true, run: () => walkTo(ap.x, ap.y) }
-                         : { label:'Move next to it', enabled:false, reason:'No path' });
+            opts.push(ap ? { label: T('wheel.moveNext'), enabled:true, run: () => walkTo(ap.x, ap.y) }
+                         : { label: T('wheel.moveNext'), enabled:false, reason: T('wheel.noPath') });
         }
     }
 
@@ -3862,76 +4408,82 @@ function buildActions(x, y){
         opts.push(a.reason ? { label: a.label, enabled:false, reason: a.reason } : { label: a.label, enabled:true, run: a.run });
         // actions a creature offers (its `actions`, see defineElement): milk a cow, shear a sheep...
         for(const [key, act] of Object.entries(mob.def.actions ?? {})){
-            const why = creatureActionReason(mob, key, act), label = (act.display ?? prettify(key)).replace('@', mob.def.name);
+            const why = creatureActionReason(mob, key, act), label = creatureActionLabel(mob, key, act);
             opts.push(nearAction(label, () => doCreatureAction(mob, key, act), { enabled: !why, reason: why }));
         }
     }
 
     if(def){
-        if(def.station) opts.push(nearAction(`Open ${def.name}`, () => openStation(x, y)));
+        if(def.station) opts.push(nearAction(T('wheel.open', { name: def.name }), () => openStation(x, y)));
         const info = plantInfo(b);
         if(info){
-            const name = prettify(info.crop.id), tier = canHarvestTier(info.crop, held);
-            if(info.rot) opts.push(nearAction(`Clear rotten ${name}`, () => harvestPlant(x, y)));
+            const name = nameOf(info.crop.id), tier = canHarvestTier(info.crop, held);
+            if(info.rot) opts.push(nearAction(T('wheel.clearRotten', { crop: name }), () => harvestPlant(x, y)));
             else if(info.stage && info.stage.yield[1] > 0){
-                opts.push(nearAction(`Harvest ${name}${info.ripe ? '' : ' (not ripe yet)'}`, () => harvestPlant(x, y), { enabled: tier.ok, reason: tier.reason }));
+                opts.push(nearAction(T('wheel.harvest', { crop: name }) + (info.ripe ? '' : T('farm.notRipe')), () => harvestPlant(x, y), { enabled: tier.ok, reason: tier.reason }));
             }
         }
-        if(def.kind === 'fern') opts.push(nearAction('Gather plant fibers', () => harvestFern(x, y), { here:true }));
+        if(def.kind === 'fern') opts.push(nearAction(T('wheel.gatherFibers'), () => harvestFern(x, y), { here:true, id:'gather' }));
         if(def.kind === 'farmland'){
-            if(!b.plant && held instanceof CropSeedItem) opts.push(nearAction(`Plant ${prettify(held.crop)}`, () => plantSeed(x, y)));
-            else if(b.plant && held instanceof CropSeedItem && b.plant.crop === held.crop){
-                const why = stackReason(b, held);
-                opts.push(nearAction(`Add ${prettify(held.crop)} seed (${b.plant.count || 1}/${FARM.maxStack})`, () => plantSeed(x, y), { enabled: !why, reason: why }));
+            // harvesting farmland needs no hoe
+            const hl = farmHarvestLabel(b);
+            if(hl) opts.push(nearAction(hl, () => harvestFarmland(x, y)));
+            if(held instanceof CropSeedItem){
+                const why = plantReason(b, held), n = b.seeds.items.filter(Boolean).length;
+                opts.push(nearAction(T('wheel.plant', { crop: nameOf(held.crop), n, max: FARM.slots }), () => plantSeed(x, y), { enabled: !why, reason: why, id:'plant' }));
             }
             if(held instanceof Bucket){
                 const full = b.water >= FARM.waterMax;   // full: pouring more floods it (a pond, given time)
-                const reason = w.empty ? 'The bucket is empty' : b.water >= FARM.floodMax ? "Can't hold any more water" : undefined;
-                opts.push(nearAction(`${full ? 'Flood' : 'Water'} farmland (${Math.round(b.water)}/${FARM.waterMax})`, () => waterFarmland(x, y), { enabled: !reason, reason }));
+                const reason = w.empty ? T('water.bucketEmptyShort') : b.water >= FARM.floodMax ? T('wheel.cantHoldMore') : undefined;
+                opts.push(nearAction(T(full ? 'wheel.flood' : 'wheel.water', { w: Math.round(b.water), max: FARM.waterMax }), () => waterFarmland(x, y), { enabled: !reason, reason, id:'waterFarmland' }));
+                if(b.water > FARM.waterMax){   // flooded: scoop the extra back into the bucket
+                    const why = unfloodReason(b, w);
+                    opts.push(nearAction(T('wheel.unflood', { w: Math.round(b.water), max: FARM.waterMax }), () => unfloodFarmland(x, y), { enabled: !why, reason: why }));
+                }
             }
         }
         if(!def.replaceable){
             const mi = miningInfo(def, held), busy = containerBusy(b), sitting = boatHasPlayer(i);
-            opts.push(nearAction(`${verbFor(def)} ${def.name}${mi.ok ? ` (${mi.time.toFixed(1)}s)` : ''}`,
+            opts.push(nearAction(T('action.verbBlock', { verb: verbFor(def), block: def.name }) + (mi.ok ? T('wheel.secs', { secs: mi.time.toFixed(1) }) : ''),
                 () => startMine(x, y),
-                { enabled: mi.ok && !busy && !sitting, reason: !mi.ok ? mi.reason : busy ? 'Empty it first' : sitting ? "You're sitting in it" : undefined, here: !def.solid }));
+                { enabled: mi.ok && !busy && !sitting, reason: !mi.ok ? mi.reason : busy ? T('wheel.emptyFirst') : sitting ? T('boat.sittingInShort') : undefined, here: !def.solid }));
         }
     }
     const floorish = !def || def.replaceable;
     if(isShovel(held) && !def && g && g.water){
         const can = canFillWaterCell(x, y, held);
-        opts.push(nearAction(`Fill in with sand (${fillWaterTime(held).toFixed(1)}s)`, () => startFillWater(x, y), { enabled: can.ok, reason: can.reason }));
+        opts.push(nearAction(T('wheel.fillInSand', { secs: fillWaterTime(held).toFixed(1) }), () => startFillWater(x, y), { enabled: can.ok, reason: can.reason }));
     }
     const src = waterSourceAt(x, y);
     if(floorish && src && (src.kind === 'water' || w)){
         let reason;
-        if(!w) reason = 'Hold a canteen or a bucket';
-        else if(src.left <= 0) reason = 'This source is dry';
-        else if(w.full) reason = `The ${prettify(held.id)} is full`;
-        const what = w ? prettify(held.id).toLowerCase() : 'canteen';
-        opts.push(nearAction(`Fill ${what} (${src.left}/${src.max}${src.kind === 'puddle' ? ' puddle' : ''})`, () => fillContainer(x, y), { enabled: !reason, reason, here: src.kind === 'puddle' }));
+        if(!w) reason = T('water.holdContainerShort');
+        else if(src.left <= 0) reason = T('water.sourceDryShort');
+        else if(w.full) reason = T('water.isFull', { item: nameOf(held.id) });
+        const what = w ? nameOf(held.id) : nameOf('canteen');
+        opts.push(nearAction(T(src.kind === 'puddle' ? 'wheel.fillPuddle' : 'wheel.fill', { item: what, n: src.left, max: src.max }), () => fillContainer(x, y), { enabled: !reason, reason, here: src.kind === 'puddle', id:'fill' }));
     }
     if(floorish && g && g.passable){
         if(isHoe(held)){
             const can = canTill(x, y);
-            opts.push(nearAction(`Till soil (${tillTime(held).toFixed(1)}s)`, () => startTill(x, y), { enabled: can.ok, reason: can.reason }));
+            opts.push(nearAction(T('wheel.till', { secs: tillTime(held).toFixed(1) }), () => startTill(x, y), { enabled: can.ok, reason: can.reason }));
         }
         if(!def && Theaya.ground[i] === FLOOR){ const can = canDigGrass(x, y, held);
             opts.push(nearAction(digLabel(held, x, y), () => startDigGrass(x, y), { enabled: can.ok, reason: can.reason, here:true }));
         }
         // walk-over blocks (torches, sand) can go on your own cell
         const underfoot = held instanceof BlockItem && !blocksMover(Blocks.get(held.block), 'player');
-        if((d > 0 || underfoot) && held instanceof BlockItem) opts.push(nearAction(`Place ${prettify(held.id)}`, () => placeBlock(x, y), { here: underfoot }));
+        if((d > 0 || underfoot) && held instanceof BlockItem) opts.push(nearAction(T('wheel.place', { item: nameOf(held.id) }), () => placeBlock(x, y), { here: underfoot, id:'place' }));
     } else if(!def && d > 0 && held instanceof BlockItem){
-        if(isBoatItem && g && g.water) opts.push(nearAction(`Place ${prettify(held.id)}`, () => placeBlock(x, y)));
-        else opts.push({ label:`Place ${prettify(held.id)}`, enabled:false, reason: isBoatItem ? 'A boat goes on a water cell' : "Can't build here" });
+        if(isBoatItem && g && g.water) opts.push(nearAction(T('wheel.place', { item: nameOf(held.id) }), () => placeBlock(x, y), { id:'place' }));
+        else opts.push({ label: T('wheel.place', { item: nameOf(held.id) }), enabled:false, reason: isBoatItem ? T('wheel.boatOnWater') : T('wheel.cantBuild') });
     }
 
     if(d === 0){
         const use = useLabel(held);
         if(use) opts.push({ label: use, enabled:true, run: useHeld });
     }
-    opts.push({ label:'Inspect', enabled:true, run: () => inspectCell(x, y) });
+    opts.push({ label: T('wheel.inspect'), enabled:true, run: () => inspectCell(x, y) });
     return opts;
 }
 
@@ -3963,7 +4515,7 @@ function tryInteract(){
     const pc = playerCell();
     if(!pc) return;
     const cands = areaZones.home.neighbors(pc.x, pc.y).filter(n => { const d = blockDefAt(n.x, n.y); return d && d.station; });
-    if(!cands.length){ notify(`No ${Object.values(STATION_TITLES).map(t => t.toLowerCase()).join(', ')} next to you.`, '#ffb070'); return; }
+    if(!cands.length){ notify(T('station.noneNear', { list: Object.values(STATION_TITLES).join(T('list.sep')) }), '#ffb070'); return; }
     const hov = areaZones.home.toCell(mouse.x, mouse.y);
     const pick = (hov && cands.find(c => c.x === hov.x && c.y === hov.y)) || cands[0];
     openStation(pick.x, pick.y);
@@ -3984,13 +4536,13 @@ function isGear(id){
 function craft(recipe, times = 1){
     const inv = player.inventory;
     const missing = recipe.missing(inv, 1);
-    if(missing.length){ notify('Missing: ' + missing.map(m => `${m.need - m.have} ${Recipe.label(m.key)}`).join(', '), '#ff8a7a'); return false; }
+    if(missing.length){ notify(T('craft.missing', { list: missing.map(m => T('item.count', { n: m.need - m.have, name: Recipe.label(m.key) })).join(T('list.sep')) }), '#ff8a7a'); return false; }
     times = Math.max(1, Math.min(times, recipe.maxCrafts(inv)));
     const out = recipe.output;
-    if(roomForItems(out.id) < out.count * times){ notify('No room in your inventory.', '#ff8a7a'); return false; }
+    if(roomForItems(out.id) < out.count * times){ notify(T('craft.noRoom'), '#ff8a7a'); return false; }
     recipe.consume(inv, times);
     giveItems(out.id, out.count * times, isGear(out.id));   // new gear lands on the hotbar first
-    notify(`Crafted ${out.count * times} ${prettify(out.id)}`, '#a6f0a0');
+    notify(T('craft.crafted', { items: T('item.count', { n: out.count * times, name: nameOf(out.id) }) }), '#a6f0a0');
     return true;
 }
 
@@ -4035,14 +4587,14 @@ function tickMachines(dt){
             let status = M.idle;
             if(r){
                 const out = r.output;
-                if(!machineHasRoom(b, r)) status = 'Output full: take the items out';
+                if(!machineHasRoom(b, r)) status = T('machine.outputFull');
                 else {
                     if(b.burn <= 0 && !M.noFuel){
                         const f = b.fuel.getSlot(0), v = fuelValue(f);
                         if(v > 0){ f.removeCount(1); b.fuel.changed(); b.burn = b.burnMax = v * M.cfg.fuelSeconds; }
                     }
                     if(b.burn > 0 || M.noFuel){
-                        status = `${M.verb} ${prettify(out.id)}`;
+                        status = T('machine.working', { verb: M.verb, item: nameOf(out.id) });
                         b.progress += dt;
                         if(b.progress >= r.time){
                             b.progress = 0;
@@ -4052,7 +4604,7 @@ function tickMachines(dt){
                             if(bp && Math.random() < (bp.chance ?? 1)) b.output.give(Items.create(bp.id, bp.count ?? 1));
                             if(!r.canCraft(b.input)) b.active = null;
                         }
-                    } else status = 'Needs fuel (coal, logs or planks)';
+                    } else status = T('machine.needsFuel');
                 }
             }
             if(b.burn > 0) b.burn = Math.max(0, b.burn - dt);
@@ -4217,7 +4769,12 @@ const Clock = {
     get months(){ return Number(this.cfg.months) || (this.cfg.monthNames || []).length || 12; },
     get yearDays(){ return Math.max(this.months * this.monthDays, Number(this.cfg.year) || 0); },
     get extraDays(){ return this.yearDays - this.months * this.monthDays; },   // new year day(s)
-    monthName(m){ return (this.cfg.monthNames && this.cfg.monthNames[m]) || `Month ${m + 1}`; },
+    /** The configured name of month m (an id: seasonMonths and set() use it). */
+    monthKey(m){ return (this.cfg.monthNames && this.cfg.monthNames[m]) || null; },
+    /** Month m's name on screen (THEAYA_NAMES gives the translations). */
+    monthName(m){ const k = this.monthKey(m); return k ? nameOf(k) : T('calendar.month', { n: m + 1 }); },
+    /** The new year day(s)' name on screen. */
+    newYearName(){ return this.cfg.newYearDay ? nameOf(this.cfg.newYearDay) : T('calendar.newYear'); },
     advance(dt){ this.elapsed += dt * this.speed; },
     /** In game days that pass in dt real (scene) seconds. */
     dayDelta(dt){ return dt * this.speed / this.day; },
@@ -4232,18 +4789,18 @@ const Clock = {
     date(){
         const D = this.dayIndex, Y = this.yearDays, doy = ((D % Y) + Y) % Y, extra = this.extraDays;
         const year = Math.floor(D / Y) + 1;
-        if(doy < extra) return { year, dayOfYear: doy, month: -1, monthName: this.cfg.newYearDay || 'New Year', dayOfMonth: doy + 1, newYear: true };
+        if(doy < extra) return { year, dayOfYear: doy, month: -1, monthName: this.newYearName(), dayOfMonth: doy + 1, newYear: true };
         const m = Math.floor((doy - extra) / this.monthDays);
         return { year, dayOfYear: doy, month: m, monthName: this.monthName(m), dayOfMonth: (doy - extra) % this.monthDays + 1, newYear: false };
     },
-    dateText(){ const d = this.date(); return d.newYear ? `${d.monthName}, Year ${d.year}` : `${d.monthName} ${d.dayOfMonth}, Year ${d.year}`; },
+    dateText(){ const d = this.date(); return T('calendar.date', { date: d.newYear ? d.monthName : T('calendar.monthDay', { month: d.monthName, day: d.dayOfMonth }), year: d.year }); },
     /** Season id for the current date. */
     season(){ const d = this.date(); return this.seasonOf(d.newYear ? -1 : d.month); },
     /** Season id of month m (0-based; -1 = the new year day(s), which belong to the last month's season). */
     seasonOf(m){
         const seasons = Object.keys(this.cfg.seasons || {});
         if(!seasons.length) return 'none';
-        const month = m < 0 ? this.months - 1 : m, name = this.monthName(month);
+        const month = m < 0 ? this.months - 1 : m, name = this.monthKey(month);
         const map = this.cfg.seasonMonths || {};
         for(const s of seasons) if((map[s] || []).includes(name)) return s;
         return seasons[Math.min(seasons.length - 1, Math.floor(month * seasons.length / this.months))];   // even split
@@ -4294,10 +4851,11 @@ const Weather = {
     /** A value of the current weather's _weatherControl entry (dflt when clear / missing). */
     param(key, dflt){ if(!this.current) return dflt; const v = this.data()[key]; return v ?? dflt; },
     name(){
-        if(!this.current) return 'Clear';
-        const W = this.data(), base = W.name || prettify(this.type);
-        if(this.current.hail && this.type !== 'hail') return `${base} + hail`;
-        if(W.precipitation && playerTemperature() <= 0 && this.type !== 'hail') return this.type === 'storm' ? 'Snowstorm' : 'Snow';
+        if(!this.current) return nameOf('clear');
+        // the game's weathers are named in THEAYA_NAMES; one added to _weatherControl without a translation uses its own `name`
+        const W = this.data(), base = THEAYA_NAMES[this.type] ? nameOf(this.type) : (W.name || nameOf(this.type));
+        if(this.current.hail && this.type !== 'hail') return T('weather.plusHail', { name: base });
+        if(W.precipitation && playerTemperature() <= 0 && this.type !== 'hail') return nameOf(this.type === 'storm' ? 'snowstorm' : 'snow');
         return base;
     },
     /** Rolls today's weather from the season's list (first entry whose chance hits). */
@@ -4317,9 +4875,9 @@ const Weather = {
         const W = _weatherControl[type];
         this.current = { type, start: Clock.elapsed, end: Clock.elapsed + duration,
             hail: type === 'hail' || (!!W.hailChance && temp <= hailMax && Math.random() < W.hailChance) };
-        notify(`Weather: ${this.name()}`, '#bcd6ff');
+        notify(T('weather.begin', { name: this.name() }), '#bcd6ff');
     },
-    end(){ if(this.current) notify(`The ${this.name().toLowerCase()} is over.`, '#bcd6ff'); this.current = null; },
+    end(){ if(this.current) notify(T('weather.end', { name: this.name().toLowerCase() }), '#bcd6ff'); this.current = null; },
     tick(dt){
         const day = Clock.dayIndex;
         if(day !== this.lastDay){ this.lastDay = day; if(!this.current && !this.next) this.roll(); }
@@ -4380,6 +4938,9 @@ const Weather = {
                 for(const i of T.plants){
                     const b = T.blocks[i], info = plantInfo(b);
                     if(info && !info.rot && b.plant.age > 0 && chance(H.cropDamage)){ b.plant.age = Math.max(0, b.plant.age - (H.setback ?? 0.25)); T.dirty.add(i); }
+                    for(const { p, info: si } of farmSeedlings(b)){   // farmland: each seedling can be hit
+                        if(!si.rot && p.age > 0 && chance(H.cropDamage)){ p.age = Math.max(0, p.age - (H.setback ?? 0.25)); T.dirty.add(i); }
+                    }
                 }
             }
             if(chance(W.lightning)) this.strike();
@@ -4424,8 +4985,8 @@ const Weather = {
         const b = blockAt(x, y), W = this.data(), w = Theaya.zone.toWorld(x, y);
         this.flash = 1;
         this.bolt = { x: w.x, y: w.y, until: performance.now() + 220 };
-        if(b && b.id === 'sand'){ setBlock(x, y, 'glass'); notify('Lightning struck the sand and turned it to glass!', '#fff2a8'); }
-        if(x === pc.x && y === pc.y){ damagePlayer(W.lightningDamage ?? 3, 'lightning'); notify('You were struck by lightning!', '#ff8a7a'); }
+        if(b && b.id === 'sand'){ setBlock(x, y, 'glass'); notify(T('weather.lightningGlass'), '#fff2a8'); }
+        if(x === pc.x && y === pc.y){ damagePlayer(W.lightningDamage ?? 3, 'lightning'); notify(T('weather.struck'), '#ff8a7a'); }
     },
 };
 
@@ -4465,25 +5026,28 @@ function setTime(hour, date = null){ Clock.set(hour, date); Weather.lastDay = Cl
  */
 const CREATURES = {};   // filled by the defineElements list below (type:'creature')
 defineElements([
-    { id:'zombie', type:'creature', name:'Zombie', hp:30, speed:0.9, size:15, mover:'zombie', behaviour:'hostile', sight:6, damage:8, cooldown:1.6, color:'#5d7a4c', dark:true, xp:30,
+    { id:'zombie', type:'creature', hp:30, speed:0.9, size:15, mover:'zombie', behaviour:'hostile', sight:6, damage:8, cooldown:1.6, color:'#5d7a4c', dark:true, xp:30,
       breaks:{ wood:15, stone:60, glass:10 }, drops:[ { id:'rotten_flesh', chance:1, amount:[0, 2] } ] },
     // rare, daytime only (HOSTILE.orcChance): slower than a zombie, hits much harder but slowly
-    { id:'orc', type:'creature', name:'Orc', hp:80, speed:0.6, size:19, mover:'zombie', behaviour:'hostile', sight:7, damage:22, cooldown:3.2, color:'#56733a', xp:120,
+    { id:'orc', type:'creature', hp:80, speed:0.6, size:19, mover:'zombie', behaviour:'hostile', sight:7, damage:22, cooldown:3.2, color:'#56733a', xp:120,
       breaks:{ wood:7, stone:35, glass:5 },
-      drops:[ { id:'raw_iron', chance:0.5, amount:[1, 2] }, { id:'coal', amount:[1, 3] }, { id:'flint', chance:0.5, amount:[1, 2] } ] },
-    { id:'bear', type:'creature', name:'Bear', hp:60, speed:2.0, size:20, mover:'animal', behaviour:'hostile', sight:4, damage:14, cooldown:1.8, color:'#5a3e2b', biomes:['forest'], count:4, xp:60,
+      drops:[ { id:'tin_ingot', chance:0.5, amount:[3, 5] }, { id:'coal', amount:[1, 3] }, { id:'flint', chance:0.5, amount:[1, 2] } ] },
+    // neutral: leaves you alone until you hit it, then fights back (and calms down once it loses track of you)
+    { id:'bear', type:'creature', hp:60, speed:2.0, size:20, mover:'animal', behaviour:'neutral', sight:4, damage:14, cooldown:1.8, color:'#5a3e2b', biomes:['forest'], count:4, xp:60,
       drops:[ { id:'raw_bear_meat', amount:[2, 4] }, { id:'raw_leather', amount:[1, 2] } ] },
-    { id:'deer', type:'creature', name:'Deer', hp:24, speed:2.8, size:15, mover:'animal', behaviour:'passive', skittish:4, color:'#a8743f', biomes:['forest', 'plains'], count:8, xp:5,
+    { id:'deer', type:'creature', hp:24, speed:2.8, size:15, mover:'animal', behaviour:'passive', skittish:4, color:'#a8743f', biomes:['forest', 'plains'], count:8, xp:5,
       drops:[ { id:'raw_venison', amount:[2, 3] }, { id:'raw_leather', chance:0.8 } ] },
-    { id:'rabbit', type:'creature', name:'Rabbit', hp:6, speed:3.2, size:8, mover:'animal', behaviour:'passive', skittish:3, color:'#c9bfb2', biomes:['plains', 'desert', 'forest'], count:8, xp:3,
+    { id:'rabbit', type:'creature', hp:6, speed:3.2, size:8, mover:'animal', behaviour:'passive', skittish:3, color:'#c9bfb2', biomes:['plains', 'desert', 'forest'], count:8, xp:3,
       drops:[ { id:'raw_rabbit' }, { id:'raw_leather', chance:0.35 } ] },
-    { id:'cow', type:'creature', name:'Cow', hp:30, speed:1.2, size:18, mover:'animal', behaviour:'passive', color:'#f2efe8', biomes:['plains'], count:6, xp:5,
-      drops:[ { id:'raw_beef', amount:[2, 4] }, { id:'raw_leather', amount:[1, 2] } ] },
-    { id:'pig', type:'creature', name:'Pig', hp:20, speed:1.4, size:14, mover:'animal', behaviour:'passive', color:'#eaa3a8', biomes:['plains', 'forest'], count:6, xp:4,
+    { id:'cow', type:'creature', hp:30, speed:1.2, size:18, mover:'animal', behaviour:'passive', color:'#f2efe8', biomes:['plains'], count:6, xp:5,
+      drops:[ { id:'raw_beef', amount:[2, 4] }, { id:'raw_leather', amount:[1, 2] } ],
+      actions:{ milk:{ display:'Milk @', require:{ item:'bucket', empty:true }, result:{ item:'milk_bucket', count:1 }, cooldown:60 } } },
+    // neutral like the bear: tusks for when you start a fight
+    { id:'boar', type:'creature', hp:22, speed:1.6, size:14, mover:'animal', behaviour:'neutral', sight:4, damage:6, cooldown:1.4, color:'#6b4a33', biomes:['plains', 'forest'], count:6, xp:8,
       drops:[ { id:'raw_pork', amount:[2, 3] }, { id:'raw_leather', chance:0.6 } ] },
-    { id:'chicken', type:'creature', name:'Chicken', hp:6, speed:1.6, size:8, mover:'animal', behaviour:'passive', color:'#f6f3ea', biomes:['plains'], count:7,
+    { id:'chicken', type:'creature', hp:6, speed:1.6, size:8, mover:'animal', behaviour:'passive', color:'#f6f3ea', biomes:['plains'], count:7,
       drops:[ { id:'raw_chicken', amount:[1, 2] } ] },
-    { id:'bird', type:'creature', name:'Bird', hp:4, speed:3.6, size:7, mover:'bird', behaviour:'passive', skittish:3, color:'#3f5a8a', biomes:['plains', 'forest', 'desert'], count:8,
+    { id:'bird', type:'creature', hp:4, speed:3.6, size:7, mover:'bird', behaviour:'passive', skittish:3, color:'#3f5a8a', biomes:['plains', 'forest', 'desert'], count:8,
       drops:[ { id:'raw_bird_meat' } ] },
 ]);
 /**
@@ -4582,12 +5146,17 @@ const Mobs = {
         const drops = rollDrops({ drops: m.def.drops }).filter(([, n]) => n > 0);
         for(const d of drops) if(skillChance('skinner', 0.15)) d[1]++;   // Skinner: more from every drop
         const kept = drops.map(([id, n]) => [id, n - giveItems(id, n)]);
-        notify(`${m.def.name} defeated${kept.length ? ': + ' + dropsText(kept) : ''}`, '#a6f0a0');
-        gainXp(m.def.xp ?? (m.def.behaviour === 'passive' ? XP.passive : XP.hostile), m.def.behaviour === 'passive' ? 'hunting' : 'slain');
+        notify(T('combat.defeated', { name: m.def.name }) + (kept.length ? T('combat.defeatedDrops', { items: dropsText(kept) }) : ''), '#a6f0a0');
+        const animal = m.def.behaviour === 'passive' || m.def.behaviour === 'neutral';   // bears / boars count as hunting
+        gainXp(m.def.xp ?? (m.def.behaviour === 'passive' ? XP.passive : XP.hostile), animal ? 'hunting' : 'slain');
     },
     /** Hostiles near a cell forget the player (respawn). */
     calmNear(cell, r){
-        for(const m of [...this.list]) if(this.isHostile(m) && hexDist(m, cell) <= r) this.remove(m);
+        for(const m of [...this.list]){
+            if(!this.isHostile(m) || hexDist(m, cell) > r) continue;
+            if(m.def.behaviour === 'neutral'){ m.provoked = false; m.seenAt = -1e9; }   // an angry bear / boar just calms down
+            else this.remove(m);
+        }
     },
 
     /* ----- movement / AI ----- */
@@ -4701,7 +5270,7 @@ const Mobs = {
         if(b.cracks >= 1){
             setBlock(k.x, k.y, null);
             m.breaking = null;
-            if(pc && hexDist(pc, k) <= 14) notify(`The ${m.def.name.toLowerCase()} broke through your ${def.name.toLowerCase()}!`, '#ff8a7a');
+            if(pc && hexDist(pc, k) <= 14) notify(T('combat.brokeThrough', { creature: m.def.name.toLowerCase(), block: def.name.toLowerCase() }), '#ff8a7a');
         }
         return true;
     },
@@ -4713,6 +5282,7 @@ const Mobs = {
             // after you it keeps track of you while you're in range, even behind walls.
             const was = this.hunting(m, d, now);
             if(d <= m.def.sight * stealthMult() && (was || lineClear(m, pc, blocksSight))) m.seenAt = now;   // sneaking (Hunter) shrinks how far it notices you
+            if(m.provoked && !this.hunting(m, d, now)) m.provoked = false;   // a neutral creature that lost track of you calms down
             if(this.hunting(m, d, now)){
                 if(d <= 1){
                     m.facing = Math.atan2(player.transform.position.y - m.py, player.transform.position.x - m.px);
@@ -4720,7 +5290,7 @@ const Mobs = {
                         const dmg = damagePlayer(m.def.damage, m.def.name);
                         m.cooldown = m.def.cooldown;
                         this.fx.push({ kind:'swing', x: player.transform.position.x, y: player.transform.position.y, t0: performance.now(), dur: 200, color:'#ff6a5a' });
-                        notify(`The ${m.def.name.toLowerCase()} hits you (-${dmg.toFixed(1)})`, '#ff8a7a');
+                        notify(T('combat.hitsYou', { creature: m.def.name.toLowerCase(), dmg: dmg.toFixed(1) }), '#ff8a7a');
                     }
                     return;
                 }
@@ -4731,7 +5301,7 @@ const Mobs = {
                         m.breaking = { x: step.x, y: step.y, id: b.id, recheck: 2, thump: 0 };
                         if(hexDist(pc, step) <= 14 && now - (this._warned || -1e9) > 8){
                             this._warned = now;
-                            notify(`A${/^[aeiou]/i.test(m.def.name) ? 'n' : ''} ${m.def.name.toLowerCase()} is breaking your ${Blocks.get(b.id).name.toLowerCase()}!`, '#ffb070');
+                            notify(T('combat.breaking', { a: /^[aeiou]/i.test(m.def.name) ? 'An' : 'A', creature: m.def.name.toLowerCase(), block: Blocks.get(b.id).name.toLowerCase() }), '#ffb070');
                         }
                         return;
                     }
@@ -4813,7 +5383,7 @@ const Mobs = {
     spawnHostiles(){
         const pc = playerCell();
         if(!pc) return;
-        const T = Theaya, inCave = i => T.biome[i] === 'cave';
+        const Th = Theaya, inCave = i => Th.biome[i] === 'cave';   // (not `T`: that's the text function)
         const ok = (i, cave) => {
             const c = cellXY(i), d = hexDist(c, pc);
             if(inCave(i) !== cave || d < HOSTILE.minDist || d > HOSTILE.maxDist) return false;
@@ -4828,7 +5398,7 @@ const Mobs = {
         // orcs: a very rare daytime spawn on the surface
         if(Clock.light() >= 0.5 && this.count(m => m.type === 'orc') < HOSTILE.maxOrcs && Math.random() < HOSTILE.orcChance){
             const c = this.randomCell(i => ok(i, false));
-            if(c){ this.spawn('orc', c.x, c.y); notify('You hear heavy footsteps... an orc is roaming nearby.', '#ffb070'); }
+            if(c){ this.spawn('orc', c.x, c.y); notify(T('combat.orcNear'), '#ffb070'); }
         }
     },
     /** Tops up every animal type to its `count` (all at once at load, one at a time later). */
@@ -4863,12 +5433,12 @@ const Mobs = {
 /** What the held item does in a fight: { kind:'melee'|'ranged', range, cooldown, damage?, power?, item } */
 function weaponInfo(item){
     const L = item && typeof item.get === 'function' ? item.get('launcher') : null;
-    if(L && !item.isBroken) return { kind:'ranged', range: L.range, cooldown: L.cooldown, power: L.power, item, name: prettify(item.id) };
+    if(L && !item.isBroken) return { kind:'ranged', range: L.range, cooldown: L.cooldown, power: L.power, item, name: nameOf(item.id) };
     const a = item && typeof item.get === 'function' ? item.get('attack') : null;
     if(a && !item.isBroken && item.hasTag('weapon')){
-        return { kind:'melee', range:1, cooldown: item.hasTag('sword') ? 0.6 : 0.9, damage: a.damage, item, name: prettify(item.id) };
+        return { kind:'melee', range:1, cooldown: item.hasTag('sword') ? 0.6 : 0.9, damage: a.damage, item, name: nameOf(item.id) };
     }
-    return { kind:'melee', range:1, cooldown:0.7, damage:2, item:null, name:'fists' };
+    return { kind:'melee', range:1, cooldown:0.7, damage:2, item:null, get name(){ return T('combat.fists'); } };
 }
 /** The strongest arrow in the inventory, or null. */
 function bestArrow(){
@@ -4931,18 +5501,18 @@ function attackMob(m, w){
     let dmg;
     if(w.kind === 'ranged'){
         const arrow = bestArrow();
-        if(!arrow){ notify(`No arrows for the ${w.name}!`, '#ff8a7a'); return false; }
+        if(!arrow){ notify(T('combat.noArrowsFor', { weapon: w.name }), '#ff8a7a'); return false; }
         dmg = arrow.get('ammoStats').damage * w.power;
         arrow.removeCount(1);
         player.inventory._changed({ event:'shoot' });
-        Mobs.fx.push({ kind:'arrow', x0: pp.x, y0: pp.y, x1: m.px, y1: m.py, t0: performance.now(), dur: 160, color: Items.look(arrow).color });
+        Mobs.fx.push({ kind:'arrow', x0: pp.x, y0: pp.y, x1: m.px, y1: m.py, t0: performance.now(), dur: 160, color: Items.look(arrow).color, item: arrow.id });
     } else {
         dmg = w.damage;
         Mobs.fx.push({ kind:'swing', x: m.px, y: m.py, t0: performance.now(), dur: 200, color:'#ffffff' });
     }
     if(w.item){
         w.item.wear(1);
-        if(w.item.isBroken){ player.inventory.removeRef(w.item); notify(`Your ${prettify(w.item.id)} broke!`, '#ff8a7a'); }
+        if(w.item.isBroken){ player.inventory.removeRef(w.item); notify(T('notify.broke', { item: nameOf(w.item.id) }), '#ff8a7a'); }
     }
     Mobs.hurt(m, dmg * (1 + 0.08 * skillLevel('brawler')));   // Brawler
     return true;
@@ -4969,15 +5539,15 @@ function tickCombat(dt){
     if(c.plan > 0 && c.key === key && zone.isMoving(player)) return;
     c.plan = 0.4; c.key = key;
     const spot = attackCellFor(m, w);
-    if(!spot){ notify(`Can't reach the ${m.def.name.toLowerCase()}.`, '#ffb070'); Act.combat = null; return; }
+    if(!spot){ notify(T('combat.cantReach', { creature: m.def.name.toLowerCase() }), '#ffb070'); Act.combat = null; return; }
     if(spot.x === pc.x && spot.y === pc.y) return;
     zone.moveTo(player, spot.x, spot.y, pathOpts());
 }
 /** Quick action for a creature under the cursor (any held item; weapons hit harder). */
 function attackActionFor(m){
     const w = weaponInfo(heldItem());
-    const label = `Attack ${m.def.name} (${w.name}${w.kind === 'ranged' ? `, range ${w.range}` : ''})`;
-    if(w.kind === 'ranged' && !bestArrow()) return { label, reason:'No arrows', mob: m };
+    const label = T('combat.attack', { creature: m.def.name, weapon: w.name }) + (w.kind === 'ranged' ? T('combat.range', { n: w.range }) : '') + T('combat.attackEnd');
+    if(w.kind === 'ranged' && !bestArrow()) return { label, reason: T('combat.noArrows'), mob: m };
     return { label, run: () => startAttack(m), mob: m };
 }
 
@@ -4992,7 +5562,9 @@ function drawMob(m){
     const col = d.color, dark = shade(col, -0.35);
     stroke(dark); strokeWeight(1.2);
     const head = (k, r, c = col) => { fill(c); circle(x + fx * s * k, y + fy * s * k, r); };
-    switch(m.type){
+    const mot = Textures.motion(m, m.px, m.py);
+    const tex = Textures.pick(m.type, 'main', [mot.moving && 'moving']);
+    if(!tex || tex.s.over) switch(m.type){
         case 'zombie': {
             stroke('#2f3f26'); strokeWeight(3);
             for(const side of [-1, 1]) line(x + px * s * 0.45 * side, y + py * s * 0.45 * side, x + px * s * 0.4 * side + fx * s * 0.95, y + py * s * 0.4 * side + fy * s * 0.95);
@@ -5045,10 +5617,15 @@ function drawMob(m){
             stroke(dark); head(0.8, s * 0.55, '#e8d8cc');
             noStroke(); fill('#e5a4a0'); circle(x + fx * s * 1.0, y + fy * s * 1.0, s * 0.3);
             break;
-        case 'pig':
+        case 'boar':
             fill(col); ellipse(x, y, s * 1.5, s * 1.1);
-            head(0.65, s * 0.7);
-            noStroke(); fill('#d9828a'); circle(x + fx * s * 0.95, y + fy * s * 0.95, s * 0.32);
+            noStroke(); fill(shade(col, -0.3)); ellipse(x - fx * s * 0.1, y - fy * s * 0.1, s * 0.9, s * 0.35);   // bristly back
+            stroke(dark); head(0.65, s * 0.7);
+            noStroke(); fill('#8a6a5a'); circle(x + fx * s * 0.95, y + fy * s * 0.95, s * 0.32);                 // snout
+            fill('#f2ead2');                                                                                    // tusks
+            for(const side of [-1, 1]) triangle(x + fx * s * 0.85 + px * s * 0.12 * side, y + fy * s * 0.85 + py * s * 0.12 * side,
+                                                x + fx * s * 0.85 + px * s * 0.24 * side, y + fy * s * 0.85 + py * s * 0.24 * side,
+                                                x + fx * s * 1.12 + px * s * 0.22 * side, y + fy * s * 1.12 + py * s * 0.22 * side);
             break;
         case 'chicken':
             fill(col); ellipse(x, y, s * 1.3, s * 1.1);
@@ -5073,6 +5650,7 @@ function drawMob(m){
         default:
             fill(col); circle(x, y, s);
     }
+    if(tex) Textures.draw(null, tex, x, y, s * 2, s * 2, { angle: m.facing, animate: true });
     const since = performance.now() - m.hitAt;
     if(since < 160){ noStroke(); fill(255, 40, 40, 140 * (1 - since / 160)); circle(x, y, s * 1.6); }
     if(m.hp < m.def.hp){
@@ -5087,8 +5665,12 @@ function drawCombatFx(){
         const k = (now - f.t0) / f.dur;
         if(f.kind === 'arrow'){
             const x = f.x0 + (f.x1 - f.x0) * k, y = f.y0 + (f.y1 - f.y0) * k, a = Math.atan2(f.y1 - f.y0, f.x1 - f.x0);
-            stroke('#6b4a2a'); strokeWeight(2); line(x - Math.cos(a) * 12, y - Math.sin(a) * 12, x, y);
-            stroke(f.color); strokeWeight(3); point(x, y);
+            const tex = f.item && Textures.pick(f.item);   // the arrow item's texture (pointing right = angle 0)
+            if(!tex || tex.s.over){
+                stroke('#6b4a2a'); strokeWeight(2); line(x - Math.cos(a) * 12, y - Math.sin(a) * 12, x, y);
+                stroke(f.color); strokeWeight(3); point(x, y);
+            }
+            if(tex) Textures.draw(null, tex, x - Math.cos(a) * 6, y - Math.sin(a) * 6, 16, 16, { angle: a });
         } else if(f.kind === 'swing'){
             noFill(); stroke(255, 255, 255, 220 * (1 - k)); strokeWeight(3);
             arc(f.x, f.y, 34 + 10 * k, 34 + 10 * k, -Math.PI * 0.9 + k * 1.2, -Math.PI * 0.2 + k * 1.2);
@@ -5143,6 +5725,7 @@ const GameUI = {
     paused: false,        // pause menu open (P): the world stops
     pauseView: 'main',    // 'main' | 'controls' | 'restart'
     showHelp: true,       // the controls list on the right side of the HUD
+    settingsOpen: false,  // the settings menu (pause menu > Settings) is open
     calendar: null,       // { year, month } the calendar under the clock shows (month -1 = new year day), null = folded up
 };
 
@@ -5190,7 +5773,7 @@ function refreshWheel(){
     if(key !== GameUI.wheel.from){ GameUI.wheel.options = buildActions(GameUI.wheel.x, GameUI.wheel.y); GameUI.wheel.from = key; }
 }
 function chooseOption(opt){
-    if(!opt.enabled){ notify(opt.reason || 'Not possible.', '#ff8a7a'); return; }
+    if(!opt.enabled){ notify(opt.reason || T('wheel.notPossible'), '#ff8a7a'); return; }
     GameUI.wheel = null;
     Act.combat = null;
     opt.run();
@@ -5217,24 +5800,25 @@ function quickActionFor(x, y, wx = null, wy = null){
     if(isHoe(held)){
         const info = plantInfo(b);
         if(info){
-            const name = prettify(info.crop.id);
-            if(info.rot) return { label:`Clear rotten ${name}`, run: near(() => harvestPlant(x, y)) };
+            const name = nameOf(info.crop.id);
+            if(info.rot) return { label: T('wheel.clearRotten', { crop: name }), run: near(() => harvestPlant(x, y)) };
             if(info.stage && info.stage.yield[1] > 0){
                 const tier = canHarvestTier(info.crop, held);
-                return tier.ok ? { label:`Harvest ${name}`, run: near(() => harvestPlant(x, y)) } : { label:`Harvest ${name}`, reason: tier.reason };
+                return tier.ok ? { label: T('wheel.harvest', { crop: name }), run: near(() => harvestPlant(x, y)) } : { label: T('wheel.harvest', { crop: name }), reason: tier.reason };
             }
         }
-        if(def && def.kind === 'fern') return { label:'Gather plant fibers', run: near(() => harvestFern(x, y)) };
+        if(def && def.kind === 'farmland'){ const hl = farmHarvestLabel(b); if(hl) return { label: hl, run: near(() => harvestFarmland(x, y)) }; }
+        if(def && def.kind === 'fern') return { label: T('wheel.gatherFibers'), run: near(() => harvestFern(x, y)) };
         if(!def || def.replaceable){
             const g = groundAt(x, y);
             if(g && g.passable){
                 const can = canTill(x, y);
-                return can.ok ? { label:'Till soil', run: near(() => startTill(x, y)) } : { label:'Till soil', reason: can.reason };
+                return can.ok ? { label: T('quick.till'), run: near(() => startTill(x, y)) } : { label: T('quick.till'), reason: can.reason };
             }
         }
     }
     // Shovel on a water cell with no water left: fill it in with sand
-    if(isShovel(held) && !def){ const gw = groundAt(x, y); if(gw && gw.water && (Theaya.water[cellIndex(x, y)] ?? 0) <= 0) return { label:`Fill in with sand (${fillWaterTime(held).toFixed(1)}s)`, run: near(() => startFillWater(x, y)) }; }
+    if(isShovel(held) && !def){ const gw = groundAt(x, y); if(gw && gw.water && (Theaya.water[cellIndex(x, y)] ?? 0) <= 0) return { label: T('wheel.fillInSand', { secs: fillWaterTime(held).toFixed(1) }), run: near(() => startFillWater(x, y)) }; }
     // Shovel / pickaxe on bare floor: dig up dirt, sand or stone (endless, the floor stays)
     if(!def && floorDigAt(x, y) && hasToolClass(held, floorDigAt(x, y).tool)){
         return { label: digLabel(held, x, y), run: near(() => startDigGrass(x, y)) };
@@ -5242,11 +5826,11 @@ function quickActionFor(x, y, wx = null, wy = null){
     // Mining: only with the block's own tool class (an axe on trees, a pickaxe on stone...),
     // and never plants / farmland (crops would get dug up by accident; use the wheel for that).
     if(def && !def.replaceable && def.kind !== 'plant' && def.kind !== 'farmland' && def.tool && m.classes.includes(def.tool)){
-        const label = `${verbFor(def)} ${def.name}`, info = miningInfo(def, held);
+        const label = T('action.verbBlock', { verb: verbFor(def), block: def.name }), info = miningInfo(def, held);
         if(!info.ok) return { label, reason: info.reason };
         if(!info.fits) return null;
-        if(containerBusy(b)) return { label, reason:`Empty the ${def.name} first` };
-        return { label: `${label} (${info.time.toFixed(1)}s)`, run: near(() => startMine(x, y)) };
+        if(containerBusy(b)) return { label, reason: T('container.emptyFirstShort', { name: def.name }) };
+        return { label: label + T('wheel.secs', { secs: info.time.toFixed(1) }), run: near(() => startMine(x, y)) };
     }
     return null;
 }
@@ -5268,13 +5852,13 @@ function equipArmor(ref){
     const item = refItem(ref), slot = armorSlotOf(item);
     if(!slot) return false;
     moveOrSwapRef(ref, slotRef(player.gear[slot], 0));
-    notify(`Wearing ${prettify(item.id)} (defense ${playerDefense()})`, '#a6f0a0');
+    notify(T('armor.wearing', { item: nameOf(item.id), def: playerDefense() }), '#a6f0a0');
     return true;
 }
 function unequipArmor(ref){
     const item = refItem(ref);
     if(!item) return false;
-    if(player.inventory.give(item) !== 0){ notify('No room in your backpack.', '#ffb070'); return false; }
+    if(player.inventory.give(item) !== 0){ notify(T('inv.noRoomBackpack'), '#ffb070'); return false; }
     ref.box.setSlot(ref.i, null);
     return true;
 }
@@ -5296,24 +5880,29 @@ function quickMoveRef(ref){
     if(ref.box !== inv){                                    // container -> inventory
         if(inv.give(item) === 0) ref.box.setSlot(ref.i, null);
         ref.box.changed();
-        if(item.count > 0 && refItem(ref)) notify('Not enough room in your inventory.', '#ffb070');
+        if(item.count > 0 && refItem(ref)) notify(T('inv.notEnoughRoom'), '#ffb070');
         return;
     }
     let targets;
     if(c.box) targets = [c.box];
+    else if(c.seeds){   // farmland: seeds into the seedling slots (one each), a bucket / canteen into the water slot
+        targets = [c.seeds.accepts(item) ? c.seeds : null, c.intake.accepts(item) ? c.intake : null].filter(Boolean);
+        if(!targets.length && item instanceof CropSeedItem){ notify(plantReason(c, item) ?? T('farm.seedsCantGo'), '#ffb070'); return; }
+    }
     else {
         const fuelOk = !(MACHINES[GameUI.station.kind] || {}).noFuel && c.fuel.accepts(item) && (!c.fuel.getSlot(0) || c.fuel.getSlot(0).canStackWith(item));
         targets = [fuelOk ? c.fuel : null, c.input.accepts(item) ? c.input : null].filter(Boolean);
     }
-    if(!targets.length){ notify(`That can't go in the ${STATION_TITLES[GameUI.station.kind].toLowerCase()}.`, '#ffb070'); return; }
+    if(!targets.length){ notify(T('station.cantGoIn', { station: STATION_TITLES[GameUI.station.kind].toLowerCase() }), '#ffb070'); return; }
     for(const box of targets){
         if(box.give(item) === 0){ inv.setSlot(ref.i, null); break; }
     }
     inv._changed({ event:'quickMove' });
-    if(refItem(ref)) notify('No room for all of it.', '#ffb070');
+    if(refItem(ref)) notify(T('inv.noRoomAll'), '#ffb070');
 }
 
-/* ----- Item menu (right-click a stack in the inventory): split slider + delete (with a confirm pop-up) ----- */
+/* ----- Item menu (right-click a stack in the inventory): split slider, item actions (eat / drink, pour water
+ *       bucket <-> canteen, see itemMenuActions) + delete (with a confirm pop-up) ----- */
 /** Move `n` of the stack at ref into the first empty slot of the same container. */
 function splitAmountRef(r, n){
     const it = refItem(r);
@@ -5343,13 +5932,66 @@ function deleteRef(ref){
     if(!it) return;
     ref.box.setSlot(ref.i, null);
     ref.box.changed({ event:'delete' });
-    notify(`Deleted ${it.count > 1 ? it.count + ' ' : ''}${prettify(it.id)}`, '#ffb070');
+    notify(T('itemMenu.deleted', { items: it.count > 1 ? T('item.count', { n: it.count, name: nameOf(it.id) }) : nameOf(it.id) }), '#ffb070');
+}
+/** The first canteen / bucket (cls) in your inventory, other than `item`, that still has room for water; or null. */
+function waterTarget(item, cls){
+    const inv = player.inventory;
+    for(let k = 1; k <= inv.slots; k++){ const it = inv[k], w = it instanceof cls && it !== item ? waterOf(it) : null; if(w && !w.full) return it; }
+    return null;
+}
+/** Pour as much water as fits from one canteen / bucket into another. */
+function pourWater(from, to){
+    const a = waterOf(from), b = waterOf(to);
+    if(!a || !b) return;
+    const n = Math.min(a.value, b.capacity - b.value);
+    if(n <= 0){ notify(a.empty ? T('water.isEmptyDot', { item: nameOf(from.id) }) : T('water.isFullDot', { item: nameOf(to.id) }), '#ffb070'); return; }
+    a.value -= n; b.value += n;
+    notify(T('water.poured', { n, to: nameOf(to.id), tv: b.value, tc: b.capacity, from: nameOf(from.id), fv: a.value, fc: a.capacity }), '#8fd0ff');
+}
+/** Extra buttons of the item menu for this item: [{ label, enabled, run, color }]. */
+function itemMenuActions(it, ref){
+    const acts = [], w = waterOf(it);
+    if(it.has && it.has('consume')) acts.push({ label: T(it.has('quench') ? 'use.drink' : 'use.eat', { item: nameOf(it.id) }) + (it.has('poisonous') ? T('itemMenu.mayPoison') : ''), enabled: true, run: () => useItem(it, ref), color: '#3d6f8f' });
+    if(it instanceof Canteen) acts.push({ label: w.empty ? T('itemMenu.drinkEmpty') : T('use.drinkWater', { v: w.value, c: w.capacity }), enabled: !w.empty, run: () => useItem(it, ref), color: '#3d6f8f' });
+    if(it instanceof Bucket){   // bucket -> canteen
+        const t = waterTarget(it, Canteen), tw = t && waterOf(t);
+        acts.push({ label: !t ? T('itemMenu.refillNone') : w.empty ? T('itemMenu.refillBucketEmpty') : T('itemMenu.refill', { v: tw.value, c: tw.capacity }),
+                    enabled: !!t && !w.empty, run: () => pourWater(it, t), color: '#3a6a8a' });
+    }
+    if(it instanceof Canteen){  // canteen -> bucket
+        const t = waterTarget(it, Bucket), tw = t && waterOf(t);
+        acts.push({ label: !t ? T('itemMenu.fillBucketNone') : w.empty ? T('itemMenu.fillBucketCanteenEmpty') : T('itemMenu.fillBucket', { v: tw.value, c: tw.capacity }),
+                    enabled: !!t && !w.empty, run: () => pourWater(it, t), color: '#3a6a8a' });
+    }
+    return acts;
 }
 /** Position and slider geometry of the open item menu (shared by drawing and input). */
 function itemMenuLayout(im){
-    const it = refItem(im.ref), w = 230, canSplit = !!(it && it.count >= 2), h = canSplit ? 176 : 100;
+    const it = refItem(im.ref), w = 230, canSplit = !!(it && it.count >= 2);
+    const acts = it ? itemMenuActions(it, im.ref).length : 0, dump = it instanceof Bucket;
+    const h = (canSplit ? 176 : 100) + acts * 32 + (dump ? 78 : 0);
     const x = Math.max(8, Math.min(width - w - 8, im.x + 6)), y = Math.max(8, Math.min(height - h - 8, im.y + 6));
-    return { x, y, w, h, canSplit, sx: x + 16, sw: w - 32, sy: y + 72 };
+    return { x, y, w, h, canSplit, dump, sx: x + 16, sw: w - 32, sy: y + 72 };
+}
+/** How much water the bucket's "Dump water" slider is set to: all of it until the slider is moved. */
+function dumpAmount(im, w){
+    if(!w || w.value <= 0) return 0;
+    return im.dump == null ? w.value : Math.max(1, Math.min(w.value, im.dump));
+}
+function setDumpAmount(im, mx){
+    const w = waterOf(refItem(im.ref)), s = im.dumpSlider;
+    if(!w || !s || w.value <= 0) return;
+    const k = Math.max(0, Math.min(1, (mx - s.sx) / s.sw));
+    im.dump = 1 + Math.round(k * (w.value - 1));
+}
+/** Pour n water out of a bucket onto the ground (it's gone). */
+function dumpWater(item, n){
+    const w = waterOf(item);
+    n = Math.min(n, w ? w.value : 0);
+    if(n <= 0){ notify(T('water.isEmptyDot', { item: nameOf(item.id) }), '#ffb070'); return; }
+    w.value -= n;
+    notify(T('water.dumped', { n, item: nameOf(item.id), v: w.value, c: w.capacity }), '#8fd0ff');
 }
 function setItemMenuAmount(im, mx){
     const it = refItem(im.ref), L = itemMenuLayout(im);
@@ -5375,11 +6017,16 @@ function handleItemMenuInput(hit, mx, my){
     }
     if(Keys.pressed('mouse@left')){
         if(hit && hit.kind === 'itemSlider'){ im.dragging = true; setItemMenuAmount(im, mx); }
+        else if(hit && hit.kind === 'dumpSlider'){ im.dragging = 'dump'; setDumpAmount(im, mx); }
         else if(hit && hit.kind === 'button' && hit.enabled !== false) hit.onClick(false);
         else if(!(hit && hit.kind === 'itemMenu')) closeItemMenu();
         return true;
     }
-    if(im.dragging){ if(Keys.down('mouse@left')) setItemMenuAmount(im, mx); else im.dragging = false; }
+    if(im.dragging){
+        if(!Keys.down('mouse@left')) im.dragging = false;
+        else if(im.dragging === 'dump') setDumpAmount(im, mx);
+        else setItemMenuAmount(im, mx);
+    }
     return true;
 }
 function slotClick(ref, shift){
@@ -5405,6 +6052,7 @@ function setPaused(on = true){
     if(on === GameUI.paused) return;
     GameUI.paused = on;
     GameUI.pauseView = 'main';
+    GameUI.settingsOpen = false;
     theayaScene.pause = on;
     if(on){ GameUI.wheel = null; GameUI.press = null; GameUI.itemMenu = null; GameUI.confirmDelete = null; }
 }
@@ -5413,7 +6061,8 @@ const togglePause = () => setPaused(!GameUI.paused);
 /** Input while paused: only the menu (P / Esc / clicks on its buttons). */
 function handlePausedInput(hit){
     if(Keys.pressed('key@escape')){
-        if(GameUI.pauseView !== 'main') GameUI.pauseView = 'main';
+        if(GameUI.settingsOpen) closeSettings();   // the settings menu goes back to the pause menu
+        else if(GameUI.pauseView !== 'main') GameUI.pauseView = 'main';
         else setPaused(false);
         return;
     }
@@ -5575,6 +6224,16 @@ function groundColorAt(i){
     const base = (b && b.floor === gid && b.floorColor) || gt.color;
     return Theaya.mud.has(i) ? lerpColor(color(base), color('#5e4630'), 0.55).toString() : base;
 }
+/** Texture states of a cell's floor, most specific first (see 3a. Textures). */
+function groundStates(i){
+    const gt = groundTypes[Theaya.ground[i]];
+    return [
+        Theaya.dried.has(i) && 'dried',
+        Theaya.mud.has(i) && 'mud',
+        gt.water && (Theaya.water[i] ?? WATER_UNITS) < WATER_UNITS / 2 && 'low',
+        Theaya.biome[i],
+    ];
+}
 /** Puddles, snow and dried cracks drawn over a cell's floor. */
 function drawGroundCover(g, i, c, poly, h){
     if(Theaya.dried.has(i)){
@@ -5603,21 +6262,28 @@ function drawCellOn(g, i){
     const { x, y } = cellXY(i), zone = Theaya.zone;
     const poly = zone.cellPolygon(x, y), c = zone.toWorld(x, y);
     const col = groundColorAt(i), gt = groundTypes[Theaya.ground[i]];
-    g.noStroke();
-    g.fill(col);
-    polyShape(g, poly, 1.04, c);
-    // ground detail
     const h = k => hash2(x * 7 + k, y * 13 + k, 99);
-    if(gt.water){
-        g.stroke(255, 255, 255, 50); g.strokeWeight(1.5); g.noFill();
-        const wy = c.y - 4 + h(1) * 8;
-        g.line(c.x - 9, wy, c.x - 2, wy - 2); g.line(c.x - 2, wy - 2, c.x + 6, wy);
-    } else if(Theaya.ground[i] === FLOOR){
-        g.stroke(shade(col, -0.18)); g.strokeWeight(1.5);
-        for(let k = 0; k < 3; k++){ const px = c.x - 12 + h(k) * 24, py = c.y - 12 + h(k + 5) * 24; g.line(px, py, px - 1, py - 4); g.line(px, py, px + 2, py - 3); }
+    const tex = Textures.pick(Theaya.ground[i], 'main', groundStates(i));
+    if(tex && !tex.s.over){
+        g.noStroke(); g.fill(col); polyShape(g, poly, 1.04, c);   // under the image, in case it has see-through parts
+        drawCellTexture(g, tex, c, poly, tex.s.clip !== false);
     } else {
-        g.noStroke(); g.fill(shade(col, -0.12));
-        for(let k = 0; k < 3; k++) g.circle(c.x - 12 + h(k) * 24, c.y - 12 + h(k + 5) * 24, 2.5);
+        g.noStroke();
+        g.fill(col);
+        polyShape(g, poly, 1.04, c);
+        // ground detail
+        if(gt.water){
+            g.stroke(255, 255, 255, 50); g.strokeWeight(1.5); g.noFill();
+            const wy = c.y - 4 + h(1) * 8;
+            g.line(c.x - 9, wy, c.x - 2, wy - 2); g.line(c.x - 2, wy - 2, c.x + 6, wy);
+        } else if(Theaya.ground[i] === FLOOR){
+            g.stroke(shade(col, -0.18)); g.strokeWeight(1.5);
+            for(let k = 0; k < 3; k++){ const px = c.x - 12 + h(k) * 24, py = c.y - 12 + h(k + 5) * 24; g.line(px, py, px - 1, py - 4); g.line(px, py, px + 2, py - 3); }
+        } else {
+            g.noStroke(); g.fill(shade(col, -0.12));
+            for(let k = 0; k < 3; k++) g.circle(c.x - 12 + h(k) * 24, c.y - 12 + h(k + 5) * 24, 2.5);
+        }
+        if(tex) drawCellTexture(g, tex, c, poly, tex.s.clip !== false);   // `over`: the image on top of the built-in look
     }
     drawGroundCover(g, i, c, poly, h);
     g.stroke(0, 0, 0, 28); g.strokeWeight(1); g.noFill();
@@ -5626,8 +6292,17 @@ function drawCellOn(g, i){
     const b = Theaya.blocks[i], def = b && Blocks.get(b.id);
     if(def) drawBlockBody(g, def, b, c, poly, i);
 }
-/** A crop at its growth stage (sprout / growing / ripe / rotten), centered at c. */
-function drawPlant(g, cropId, info, c, h){
+/** Texture states of a plant (see 3a. Textures). */
+const plantStates = info => !info ? ['sprout'] : [info.rot && 'rotten', info.ripe && 'ripe', 'stage' + Math.max(0, info.k), info.k < 0 ? 'sprout' : 'growing'];
+/** A crop at its growth stage (sprout / growing / ripe / rotten), centered at c. blockId = the plant block (its texture wins over the crop's). */
+function drawPlant(g, cropId, info, c, h, blockId = null){
+    const st = plantStates(info);
+    const tex = (blockId && Textures.pick(blockId, 'main', st)) || Textures.pick(cropId, 'main', st);
+    if(tex && !tex.s.over){ drawCellTexture(g, tex, c, null); return; }
+    drawPlantLook(g, cropId, info, c, h);
+    if(tex) drawCellTexture(g, tex, c, null);
+}
+function drawPlantLook(g, cropId, info, c, h){
     const L = cropLook(cropId);
     const k = info ? info.k : -1, n = info ? info.crop.stages.length : 1;
     const grow = Math.min(1, (k + 2) / Math.max(2, n));            // 0..1 size
@@ -5671,7 +6346,29 @@ function drawPlant(g, cropId, info, c, h){
         else for(let j = 0; j < Math.min(5, yieldMax + 1); j++) g.circle(c.x - 8 + h(j + 50) * 16, c.y - 8 + h(j + 55) * 14, ripe ? 5.5 : 4);
     }
 }
+/** Where each farmland seedling slot is drawn in its cell (offsets from the cell center, px). */
+const FARM_SPOTS = [[-9, -4], [9, -4], [0, 2], [-9, 8], [9, 8]];
+/** Texture states of a placed block (see 3a. Textures). */
+function blockStates(def, b, i){
+    switch(def.kind){
+        case 'door': { const pc = playerCell(); return [pc && cellIndex(pc.x, pc.y) === i && 'open']; }
+        case 'station': return [b && b.lit && 'lit'];
+        case 'boat': return [boatHasPlayer(i) && 'aboard'];
+        case 'farmland': { const w = (b && b.water) || 0; return [w > FARM.waterMax && 'flooded', w > FARM.waterMax / 2 && 'wet']; }
+        default: return null;
+    }
+}
 function drawBlockBody(g, def, b, c, poly, i = -1){
+    // plants are textured per growth stage in drawPlant; farmland draws its own texture under its gauge + plant
+    const tex = def.kind === 'plant' ? null : Textures.pick(def.id, 'main', blockStates(def, b, i));
+    if(tex && def.kind !== 'farmland'){
+        if(tex.s.over) drawBlockLook(g, def, b, c, poly, i, null);
+        drawCellTexture(g, tex, c, poly);
+    } else drawBlockLook(g, def, b, c, poly, i, tex);
+    drawBlockCracks(g, b, c);
+}
+/** The built-in look of a block. tex = farmland's texture (drawn under its gauge + plant), else null. */
+function drawBlockLook(g, def, b, c, poly, i, tex){
     const h = k => hash2(Math.round(c.x) + k, Math.round(c.y) + k * 3, 7);
     g.strokeWeight(1.5);
     switch(def.kind){
@@ -5730,7 +6427,7 @@ function drawBlockBody(g, def, b, c, poly, i = -1){
             g.noStroke(); g.fill(def.color); g.ellipse(c.x - 5, c.y - 4, 10, 6); g.ellipse(c.x + 5, c.y - 7, 10, 6);
             break;
         case 'plant':
-            drawPlant(g, b.plant ? b.plant.crop : def.crop, plantInfo(b), c, h);
+            drawPlant(g, b.plant ? b.plant.crop : def.crop, plantInfo(b), c, h, def.id);
             break;
         case 'fern':
             g.stroke(shade(def.color, -0.25)); g.strokeWeight(2);
@@ -5744,9 +6441,12 @@ function drawBlockBody(g, def, b, c, poly, i = -1){
         case 'farmland': {
             const wet = Math.min(1, (b.water || 0) / FARM.waterMax);
             const soil = lerpColor(color('#8a6a48'), color('#4a3220'), wet);
-            g.fill(soil); g.stroke(shade(def.color, -0.4)); polyShape(g, poly, 0.88, c);
-            g.stroke(lerpColor(soil, color(0), 0.3)); g.strokeWeight(2);
-            for(let k = -1; k <= 1; k++) g.line(c.x - 13, c.y + k * 7, c.x + 13, c.y + k * 7);
+            if(!tex || tex.s.over){
+                g.fill(soil); g.stroke(shade(def.color, -0.4)); polyShape(g, poly, 0.88, c);
+                g.stroke(lerpColor(soil, color(0), 0.3)); g.strokeWeight(2);
+                for(let k = -1; k <= 1; k++) g.line(c.x - 13, c.y + k * 7, c.x + 13, c.y + k * 7);
+            }
+            if(tex) drawCellTexture(g, tex, c, poly);
             // water gauge
             g.noStroke(); g.fill(0, 0, 0, 90); g.rect(c.x - 12, c.y + 13, 24, 3, 1);
             g.fill('#4aa3ff'); g.rect(c.x - 12, c.y + 13, 24 * wet, 3, 1);
@@ -5756,12 +6456,15 @@ function drawBlockBody(g, def, b, c, poly, i = -1){
                 g.fill(0, 0, 0, 90); g.rect(c.x - 12, c.y + 9, 24, 3, 1);
                 g.fill('#a8ecff'); g.rect(c.x - 12, c.y + 9, 24 * fl, 3, 1);
             }
-            if(b.plant) drawPlant(g, b.plant.crop, plantInfo(b), c, h);
-            if(b.plant && (b.plant.count || 1) > 1){   // a stack of crops: a count badge
-                g.noStroke(); g.fill(0, 0, 0, 140); g.rect(c.x - 15, c.y - 15, 17, 11, 3);
-                g.fill('#ffe9a0'); g.textSize(10); g.textAlign(CENTER, CENTER); g.text('x' + b.plant.count, c.x - 6.5, c.y - 9.5);
+            // each seedling at its own spot, at half size (the water amount is drawn live above the cell, see worldOverlay)
+            const seedlings = farmSeedlings(b);
+            for(const { k, p, info } of seedlings){
+                const o = FARM_SPOTS[k % FARM_SPOTS.length];
+                g.push(); g.translate(c.x + o[0], c.y + o[1]); g.scale(0.5);
+                drawPlant(g, p.crop, info, { x: 0, y: 0 }, j => h(j + k * 17));
+                g.pop();
             }
-            if(b.plant && b.water <= 0){ g.noStroke(); g.fill('#ffb347'); g.textSize(11); g.textAlign(CENTER, CENTER); g.text('!', c.x + 12, c.y - 12); }
+            if(seedlings.length && b.water <= 0){ g.noStroke(); g.fill('#ffb347'); g.textSize(11); g.textAlign(CENTER, CENTER); g.text('!', c.x + 13, c.y - 4); }
             break;
         }
         case 'wall':
@@ -5855,7 +6558,9 @@ function drawBlockBody(g, def, b, c, poly, i = -1){
         default:
             g.fill(def.color); g.stroke(shade(def.color, -0.35)); polyShape(g, poly, 0.8, c);
     }
-    // cracks from monsters trying to break through (1..4 levels)
+}
+/** Cracks from monsters trying to break through (1..4 levels), over the block's look or texture. */
+function drawBlockCracks(g, b, c){
     const lvl = b && b.cracks ? Math.floor(b.cracks * 4) + 1 : 0;
     if(lvl){
         g.stroke(20, 14, 10, 200); g.strokeWeight(1.6); g.noFill();
@@ -5967,6 +6672,19 @@ const worldOverlay = {
         }
         if(GameUI.wheel) cellOutline(GameUI.wheel.x, GameUI.wheel.y, '#ffd75e', 3);
         if(GameUI.station) cellOutline(GameUI.station.x, GameUI.station.y, '#8fd0ff', 2);
+        // farmland water: the total amount, overflow included (light blue when it's over the top, orange when dry)
+        push(); textSize(9); textAlign(CENTER, CENTER); textStyle(BOLD);
+        for(const i of Theaya.plants){
+            const b = Theaya.blocks[i];
+            if(!b || b.id !== 'farmland') continue;
+            const { x, y } = cellXY(i), w = zone.toWorld(x, y);
+            if(w.x < cam.left || w.x > cam.right || w.y < cam.top || w.y > cam.bottom) continue;
+            const t = String(Math.round(b.water)), tw = textWidth(t) + 8;
+            noStroke(); fill(0, 0, 0, 150); rect(w.x - tw / 2, w.y - 20, tw, 11, 5);
+            fill(b.water > FARM.waterMax ? '#a8ecff' : b.water <= 0 ? '#ffb070' : '#6fb8ff');
+            text(t, w.x, w.y - 14.5);
+        }
+        pop();
         // torch flames (they flicker, so they're drawn live, not on the terrain buffer)
         push(); noStroke();
         const t = performance.now() / 1000;
@@ -5992,6 +6710,9 @@ const worldOverlay = {
             const def = Blocks.get(Theaya.blocks[i].id);
             const near = Math.hypot(pp.x - w.x, pp.y - (w.y - 10)) < HEX_W * 1.3;
             const a = near ? 120 : 235;
+            const ctex = Textures.pick(def.id, 'canopy');
+            const drawCanopyTex = () => Textures.draw(null, ctex, w.x, w.y - 22, HEX_W * 1.2, HEX_H * 1.2, { alpha: a / 255, animate: true });
+            if(ctex && !ctex.s.over){ drawCanopyTex(); continue; }
             const leaf = color(def.accent), dark = color(shade(def.accent, -0.3)), lite = color(shade(def.accent, 0.15));
             leaf.setAlpha(a); dark.setAlpha(a); lite.setAlpha(a);
             stroke(dark); fill(leaf);
@@ -6002,6 +6723,7 @@ const worldOverlay = {
                 circle(w.x - 9, w.y - 14, 24); circle(w.x + 9, w.y - 14, 24); circle(w.x, w.y - 24, 28);
                 noStroke(); fill(lite); circle(w.x - 4, w.y - 28, 10);
             }
+            if(ctex) drawCanopyTex();   // `over`: the image on top of the built-in canopy
         }
         pop();
         // mining progress
@@ -6140,7 +6862,7 @@ const skyLayer = {
         const sp = World.camera.superPosition;
         noStroke(); fill(255, 70, 50, 220 * dark);
         for(const m of Mobs.list){
-            if(m.type !== 'zombie') continue;
+            if(m.type !== 'zombie' || (Textures.replaces('zombie') && !Textures.entry('zombie').main?.eyes)) continue;   // a texture draws its own eyes (eyes:true keeps the glow)
             const fx = Math.cos(m.facing), fy = Math.sin(m.facing), s = m.def.size;
             for(const side of [-1, 1]) circle(m.px - sp.x + fx * s * 0.45 - fy * s * 0.13 * side, m.py - sp.y + fy * s * 0.45 + fx * s * 0.13 * side, 3);
         }
@@ -6275,7 +6997,7 @@ function drawItemIcon(item, cx, cy, s){
             quad(cx - r * 0.55, cy - r * 0.45, cx + r * 0.55, cy - r * 0.45, cx + r * 0.42, cy + r * 0.6, cx - r * 0.42, cy + r * 0.6);
             noFill(); stroke('#5a5a5a'); arc(cx, cy - r * 0.45, r * 1.1, r * 0.9, Math.PI, 0);
             const w = waterOf(item);
-            noStroke(); fill(w && w.value > 0 ? '#4aa3ff' : shade(col, -0.3));
+            noStroke(); fill(look.accent || (w && w.value > 0 ? '#4aa3ff' : shade(col, -0.3)));   // accent = what's in it (milk)
             ellipse(cx, cy - r * 0.45, r * 1.05, r * 0.25);
             break;
         }
@@ -6470,21 +7192,21 @@ function statBar(x, y, w, label, value, max, col, extra = 0, danger = null){
 function drawStats(){
     const p = player, R = p.nutritionRules, rate = p.nutritionDamageRate(), def = playerDefense();
     const extra = [];
-    if(rate > 0) extra.push([`Starving: -${rate.toFixed(2)} health/s`, '#ff8a7a']);
-    if(isSneaking()) extra.push([`Sneaking: ${pct(1 - stealthSight(skillLevel('hunter')))} harder to notice`, '#c9a86a']);
-    if(p.poison) extra.push([`Poisoned: -${p.poison.dps.toFixed(1)} health/s (${Math.ceil(p.poison.left)}s)`, '#c6ff6a']);
-    if(p.regenBuff) extra.push([`Well fed: +${p.regenBuff.rate.toFixed(1)} health/s (${Math.ceil(p.regenBuff.left)}s)`, '#ff9ac0']);
-    if(def > 0) extra.push([`Armor: ${def} defense (-${Math.round(100 - 100 * ARMOR_SCALE / (ARMOR_SCALE + def))}% damage)`, '#bcd6ff']);
+    if(rate > 0) extra.push([T('hud.starving', { rate: rate.toFixed(2) }), '#ff8a7a']);
+    if(isSneaking()) extra.push([T('hud.sneaking', { pct: pct(1 - stealthSight(skillLevel('hunter'))) }), '#c9a86a']);
+    if(p.poison) extra.push([T('hud.poisoned', { rate: p.poison.dps.toFixed(1), secs: Math.ceil(p.poison.left) }), '#c6ff6a']);
+    if(p.regenBuff) extra.push([T('hud.wellFed', { rate: p.regenBuff.rate.toFixed(1), secs: Math.ceil(p.regenBuff.left) }), '#ff9ac0']);
+    if(def > 0) extra.push([T('hud.armor', { def, pct: Math.round(100 - 100 * ARMOR_SCALE / (ARMOR_SCALE + def)) }), '#bcd6ff']);
     const bottom = 12 + 122 + extra.length * 18;
     panel(12, 12, 248, 122 + extra.length * 18);
-    statBar(24, 24, 150, 'Health', p.health, p.maxHealth, '#e05555');
-    statBar(24, 46, 150, 'Hunger', p.hunger, 100, '#e0a040', p.satruation, R.hunger.threshold);
-    statBar(24, 68, 150, 'Thirst', p.thirst, 100, '#4aa3ff', 0, R.thirst.threshold);
+    statBar(24, 24, 150, T('hud.health'), p.health, p.maxHealth, '#e05555');
+    statBar(24, 46, 150, T('hud.hunger'), p.hunger, 100, '#e0a040', p.satruation, R.hunger.threshold);
+    statBar(24, 68, 150, T('hud.thirst'), p.thirst, 100, '#4aa3ff', 0, R.thirst.threshold);
     // experience: the bar fills toward the next level
     noStroke(); fill(255, 255, 255, 25); rect(24, 90, 150, 12, 6);
     fill('#9ad84a'); rect(24, 90, 150 * Math.min(1, Levels.fraction), 12, 6);
     fill(235); textSize(11); textAlign(LEFT, CENTER);
-    text(`Level ${Levels.level}  ${Math.floor(Levels.xp)}/${Levels.need()} xp`, 24 + 150 + 8, 96);
+    text(T('hud.level', { level: Levels.level, xp: Math.floor(Levels.xp), need: Levels.need() }), 24 + 150 + 8, 96);
     if(Levels.flash.until > performance.now()){ fill('#d8ff9a'); textSize(10.5); text(Levels.flash.text, 24, 112); }
     textSize(11); textAlign(LEFT, CENTER);
     extra.forEach(([t, c], k) => { fill(c); text(t, 24, 130 + k * 18); });
@@ -6505,23 +7227,43 @@ function drawItemMenu(){
     const L = itemMenuLayout(im), { x, y, w, h } = L;
     panel(x, y, w, h, null, { kind:'itemMenu' });
     drawItemIcon(it, x + 28, y + 28, 34);
-    noStroke(); fill(240); textAlign(LEFT, TOP); textStyle(BOLD); textSize(14); text(prettify(it.id), x + 54, y + 12); textStyle(NORMAL);
-    fill(170); textSize(11.5); text(`${it.count} in this stack`, x + 54, y + 32);
+    noStroke(); fill(240); textAlign(LEFT, TOP); textStyle(BOLD); textSize(14); text(nameOf(it.id), x + 54, y + 12); textStyle(NORMAL);
+    fill(170); textSize(11.5); text(T('itemMenu.inStack', { n: it.count }), x + 54, y + 32);
     let by = y + 58;
     if(L.canSplit){
-        fill(220); textSize(12); textAlign(LEFT, TOP); text('Split off', x + 16, by);
-        textAlign(RIGHT, TOP); fill('#ffd75e'); text(`${im.amount}  (keeps ${it.count - im.amount})`, x + w - 16, by);
+        fill(220); textSize(12); textAlign(LEFT, TOP); text(T('itemMenu.splitOff'), x + 16, by);
+        textAlign(RIGHT, TOP); fill('#ffd75e'); text(T('itemMenu.splitAmount', { n: im.amount, keep: it.count - im.amount }), x + w - 16, by);
         const k = it.count > 2 ? (im.amount - 1) / (it.count - 2) : 0, hx = L.sx + k * L.sw, ty = L.sy + 6;
         noStroke(); fill(60, 66, 80); rect(L.sx, ty - 3, L.sw, 6, 3);
         fill('#4f8f5a'); rect(L.sx, ty - 3, hx - L.sx, 6, 3);
         fill(im.dragging ? '#ffe9a0' : '#ffd75e'); stroke(20, 24, 32); strokeWeight(1.5); circle(hx, ty, 15); noStroke();
         region(L.sx - 8, L.sy - 6, L.sw + 16, 26, { kind:'itemSlider' });
-        colorButton(x + 16, y + 104, w - 32, 26, `Split off ${im.amount}`, true, () => {
-            if(splitAmountRef(im.ref, im.amount)) closeItemMenu(); else notify('No free slot to split into.', '#ff8a7a');
+        colorButton(x + 16, y + 104, w - 32, 26, T('itemMenu.splitButton', { n: im.amount }), true, () => {
+            if(splitAmountRef(im.ref, im.amount)) closeItemMenu(); else notify(T('itemMenu.noFreeSlot'), '#ff8a7a');
         }, '#3d7347');
         by = y + 138;
     } else by = y + 62;
-    colorButton(x + 16, by, w - 32, 26, 'Delete', true, () => { GameUI.confirmDelete = { ref: im.ref }; }, '#a2433e');
+    for(const a of itemMenuActions(it, im.ref)){   // eat / drink / pour water between a bucket and a canteen
+        colorButton(x + 16, by, w - 32, 26, a.label, a.enabled, a.run, a.color);
+        by += 32;
+    }
+    if(L.dump){   // bucket: dump some or all of its water (the slider starts at all of it)
+        const wv = waterOf(it), n = dumpAmount(im, wv), sx = x + 16, sw = w - 32, ty = by + 26;
+        im.dumpSlider = { sx, sw };
+        fill(220); noStroke(); textSize(12); textAlign(LEFT, TOP); text(T('itemMenu.dumpWater'), sx, by + 4);
+        textAlign(RIGHT, TOP); fill('#8fd0ff'); text(wv.value > 0 ? T('itemMenu.nOf', { n, of: wv.value }) : T('itemMenu.empty'), x + w - 16, by + 4);
+        const k = wv.value > 1 ? (n - 1) / (wv.value - 1) : wv.value > 0 ? 1 : 0, hx = sx + k * sw;
+        noStroke(); fill(60, 66, 80); rect(sx, ty - 3, sw, 6, 3);
+        fill('#3a7fb8'); rect(sx, ty - 3, hx - sx, 6, 3);
+        if(wv.value > 0){
+            fill(im.dragging === 'dump' ? '#d8f2ff' : '#8fd0ff'); stroke(20, 24, 32); strokeWeight(1.5); circle(hx, ty, 15); noStroke();
+            region(sx - 8, ty - 12, sw + 16, 24, { kind:'dumpSlider' });
+        }
+        colorButton(sx, by + 42, sw, 26, wv.value > 0 ? T(n === wv.value ? 'itemMenu.dumpAll' : 'itemMenu.dumpN', { n }) : T('itemMenu.bucketEmpty'), wv.value > 0,
+            () => { dumpWater(it, n); im.dump = null; }, '#356a96');
+        by += 78;
+    }
+    colorButton(x + 16, by, w - 32, 26, T('itemMenu.delete'), true, () => { GameUI.confirmDelete = { ref: im.ref }; }, '#a2433e');
 }
 function drawConfirmDelete(){
     const cd = GameUI.confirmDelete, it = cd && refItem(cd.ref);
@@ -6529,11 +7271,11 @@ function drawConfirmDelete(){
     noStroke(); fill(6, 8, 14, 170); rect(0, 0, width, height);
     region(0, 0, width, height, { kind:'pauseScreen' });   // nothing under the pop-up reacts
     const w = 320, h = 150, x = Math.round(width / 2 - w / 2), y = Math.round(height / 2 - h / 2);
-    panel(x, y, w, h, 'Delete item?', { kind:'confirmDelete' });
+    panel(x, y, w, h, T('itemMenu.deleteTitle'), { kind:'confirmDelete' });
     noStroke(); fill(225); textSize(13); textAlign(LEFT, TOP);
-    text(`Delete ${it.count > 1 ? it.count + ' ' : ''}${prettify(it.id)}? This can't be undone.`, x + 14, y + 40, w - 28, 44);
-    colorButton(x + 14, y + h - 46, (w - 40) / 2, 32, 'Delete', true, () => { deleteRef(cd.ref); closeItemMenu(); }, '#a2433e');
-    colorButton(x + 26 + (w - 40) / 2, y + h - 46, (w - 40) / 2, 32, 'Cancel', true, () => { GameUI.confirmDelete = null; }, '#4a5568');
+    text(T('itemMenu.deleteConfirm', { items: it.count > 1 ? T('item.count', { n: it.count, name: nameOf(it.id) }) : nameOf(it.id) }), x + 14, y + 40, w - 28, 44);
+    colorButton(x + 14, y + h - 46, (w - 40) / 2, 32, T('itemMenu.delete'), true, () => { deleteRef(cd.ref); closeItemMenu(); }, '#a2433e');
+    colorButton(x + 26 + (w - 40) / 2, y + h - 46, (w - 40) / 2, 32, T('ui.cancel'), true, () => { GameUI.confirmDelete = null; }, '#4a5568');
 }
 function drawChoice(){
     const c = GameUI.choice;
@@ -6542,24 +7284,24 @@ function drawChoice(){
     const cw = 230, ch = 250, gap = 18, total = c.options.length * cw + (c.options.length - 1) * gap;
     const x0 = Math.round(width / 2 - total / 2), y0 = Math.round(height / 2 - ch / 2);
     textAlign(CENTER, TOP); noStroke(); fill('#ffd75e'); textStyle(BOLD); textSize(24);
-    text(`Level ${Levels.level}!`, width / 2, y0 - 72);
+    text(T('choice.level', { level: Levels.level }), width / 2, y0 - 72);
     textStyle(NORMAL); fill(220); textSize(13);
-    text(`Choose a skill or upgrade${Levels.pending > 1 ? `  (${Levels.pending} picks waiting)` : ''}`, width / 2, y0 - 40);
+    text(T('choice.choose') + (Levels.pending > 1 ? T('choice.waiting', { n: Levels.pending }) : ''), width / 2, y0 - 40);
     c.options.forEach((id, k) => {
         const d = Skills.defs[id], lv = Skills.level(id), x = x0 + k * (cw + gap);
         const over = mouse.rawX >= x && mouse.rawX <= x + cw && mouse.rawY >= y0 && mouse.rawY <= y0 + ch;
         noStroke(); fill(over ? 'rgba(34,42,56,0.98)' : 'rgba(22,28,38,0.96)'); rect(x, y0, cw, ch, 12);
         stroke(over ? d.color : 'rgba(255,255,255,0.18)'); strokeWeight(over ? 2.5 : 1); noFill(); rect(x + 0.5, y0 + 0.5, cw - 1, ch - 1, 12);
         noStroke(); fill(d.color); rect(x, y0, cw, 6, 12, 12, 0, 0);
-        fill(150); textSize(11); textAlign(LEFT, TOP); text(d.kind === 'skill' ? 'SKILL' : 'UPGRADE', x + 16, y0 + 18);
+        fill(150); textSize(11); textAlign(LEFT, TOP); text(T(d.kind === 'skill' ? 'choice.skill' : 'choice.upgrade'), x + 16, y0 + 18);
         textAlign(RIGHT, TOP); text(`[${k + 1}]`, x + cw - 16, y0 + 18);
         fill(245); textAlign(LEFT, TOP); textStyle(BOLD); textSize(18); text(d.name, x + 16, y0 + 38); textStyle(NORMAL);
-        fill(d.color); textSize(12.5); text(lv === 0 ? 'New!' : `Level ${lv}  >  ${lv + 1}`, x + 16, y0 + 66);
+        fill(d.color); textSize(12.5); text(lv === 0 ? T('choice.new') : T('choice.levelUp', { from: lv, to: lv + 1 }), x + 16, y0 + 66);
         // level pips
         for(let p = 0; p < d.max; p++){ fill(p < lv ? d.color : p === lv ? shade(d.color, -0.1) : 'rgba(255,255,255,0.14)'); if(p === lv){ stroke(255, 255, 255, 120); strokeWeight(1); } else noStroke(); rect(x + 16 + p * Math.min(18, (cw - 32) / d.max), y0 + 88, Math.min(14, (cw - 32) / d.max - 3), 6, 2); }
         noStroke(); fill(215); textSize(12.5); textAlign(LEFT, TOP);
         text(d.desc(lv + 1), x + 16, y0 + 108, cw - 32, 80);
-        if(lv > 0){ fill(130); textSize(11); text(`Now: ${d.desc(lv)}`, x + 16, y0 + ch - 56, cw - 32, 44); }
+        if(lv > 0){ fill(130); textSize(11); text(T('choice.now', { text: d.desc(lv) }), x + 16, y0 + ch - 56, cw - 32, 44); }
         region(x, y0, cw, ch, { kind:'button', enabled:true, onClick: () => pickChoice(id) });
     });
 }
@@ -6567,12 +7309,12 @@ function drawChoice(){
 function drawSkills(){
     const ids = Object.keys(Skills.defs), w = 360, rowH = 38, h = 52 + ids.length * rowH + 14;
     const x = Math.round(width / 2 - w / 2), y = Math.max(12, Math.round(height / 2 - h / 2));
-    panel(x, y, w, h, `Skills and upgrades  (level ${Levels.level})`);
-    noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text('K to close', x + w - 14, y + 13);
+    panel(x, y, w, h, T('skills.title', { level: Levels.level }));
+    noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text(T('skills.close'), x + w - 14, y + 13);
     ids.forEach((id, k) => {
         const d = Skills.defs[id], lv = Skills.level(id), ry = y + 40 + k * rowH;
         noStroke(); fill(lv ? 235 : 120); textSize(12.5); textAlign(LEFT, TOP); text(d.name, x + 14, ry);
-        fill(lv ? 170 : 100); textSize(10.5); text(lv ? d.desc(lv) : d.kind === 'skill' ? 'Not learned yet' : 'Not taken yet', x + 14, ry + 16, w - 28, 22);
+        fill(lv ? 170 : 100); textSize(10.5); text(lv ? d.desc(lv) : T(d.kind === 'skill' ? 'skills.notLearned' : 'skills.notTaken'), x + 14, ry + 16, w - 28, 22);
         for(let p = 0; p < d.max; p++){ fill(p < lv ? d.color : 'rgba(255,255,255,0.14)'); rect(x + w - 14 - (d.max - p) * 9, ry + 3, 7, 7, 2); }
     });
 }
@@ -6580,8 +7322,8 @@ function drawSkills(){
 function drawClock(){
     const w = 236, x = width - w - 12, y = 12, rates = climateRates();
     const effects = [];
-    if(rates.thirst > 1.001) effects.push(`thirst x${rates.thirst.toFixed(2)}`);
-    if(rates.hunger > 1.001) effects.push(`hunger x${rates.hunger.toFixed(2)}`);
+    if(rates.thirst > 1.001) effects.push(T('clock.thirstRate', { x: rates.thirst.toFixed(2) }));
+    if(rates.hunger > 1.001) effects.push(T('clock.hungerRate', { x: rates.hunger.toFixed(2) }));
     const h = effects.length ? 104 : 88;
     panel(x, y, w, h, null, { kind:'clock' });   // click: open / close the calendar
     const over = mouse.rawX >= x && mouse.rawX <= x + w && mouse.rawY >= y && mouse.rawY <= y + h;
@@ -6596,16 +7338,16 @@ function drawClock(){
     if(day){ fill('#ffd75e'); circle(ix, iy, 18); stroke('#ffd75e'); strokeWeight(2); for(let k = 0; k < 8; k++){ const a = k * Math.PI / 4; line(ix + Math.cos(a) * 12, iy + Math.sin(a) * 12, ix + Math.cos(a) * 15, iy + Math.sin(a) * 15); } }
     else { fill('#dfe6ff'); circle(ix, iy, 18); fill(18, 22, 30); circle(ix + 6, iy - 4, 15); }
     noStroke(); fill(255); textSize(17); textStyle(BOLD); textAlign(LEFT, CENTER); text(Clock.timeText(), x + 44, iy);
-    textStyle(NORMAL); textSize(11); fill(190); textAlign(RIGHT, CENTER); text(`Day ${Math.max(1, Clock.dayIndex - Clock.startDay + 1)}`, x + w - 12, iy);
+    textStyle(NORMAL); textSize(11); fill(190); textAlign(RIGHT, CENTER); text(T('clock.day', { n: Math.max(1, Clock.dayIndex - Clock.startDay + 1) }), x + w - 12, iy);
     textAlign(LEFT, TOP); fill(225); textSize(11.5);
     text(Clock.dateText(), x + 14, y + 42);
     const season = Clock.season();
-    fill('#c9e89a'); text(`${prettify(season)}`, x + 14, y + 58);
+    fill('#c9e89a'); text(`${nameOf(season)}`, x + 14, y + 58);
     const t = Math.round(rates.temp);
     fill(t >= SURVIVAL.hotAbove ? '#ffb070' : t <= 0 ? '#9fd4ff' : t < SURVIVAL.coldBelow ? '#bcd6ff' : 225);
     text(`${t}°C`, x + 82, y + 58);
     fill(Weather.current ? '#bcd6ff' : 200); textAlign(RIGHT, TOP); text(Weather.name(), x + w - 12, y + 58);
-    if(effects.length){ fill('#ffb070'); textAlign(LEFT, TOP); text(effects.join(', '), x + 14, y + 76); }
+    if(effects.length){ fill('#ffb070'); textAlign(LEFT, TOP); text(effects.join(T('list.sep')), x + 14, y + 76); }
     return y + h;
 }
 
@@ -6643,9 +7385,9 @@ function drawCalendar(top){
     panel(x, top, w, h, null, { kind:'calendar' });
     // header: < Month, Year N >   + season
     const season = Clock.seasonOf(c.month), scol = SEASON_COLORS[season] ?? '#c9e89a';
-    const name = c.month < 0 ? (Clock.cfg.newYearDay || 'New Year') : Clock.monthName(c.month);
+    const name = c.month < 0 ? Clock.newYearName() : Clock.monthName(c.month);
     noStroke(); fill(255); textStyle(BOLD); textSize(14); textAlign(CENTER, TOP); text(name, x + w / 2, top + 10); textStyle(NORMAL);
-    textSize(11); fill(scol); text(`${prettify(season)}  -  Year ${c.year}`, x + w / 2, top + 30);
+    textSize(11); fill(scol); text(T('calendar.seasonYear', { season: nameOf(season), year: c.year }), x + w / 2, top + 30);
     const canBack = !(c.year <= 1 && c.month <= (Clock.extraDays > 0 ? -1 : 0));
     button(x + 10, top + 12, 26, 24, '<', canBack, () => calendarStep(-1), true);
     button(x + w - 36, top + 12, 26, 24, '>', true, () => calendarStep(1), true);
@@ -6668,13 +7410,13 @@ function drawCalendar(top){
     const fy = gridY + rows * ch + 8;
     stroke(255, 255, 255, 25); line(x + 10, fy - 2, x + w - 10, fy - 2); noStroke();
     textAlign(LEFT, TOP); textSize(11.5); fill(225);
-    text(`Today: ${d.newYear ? d.monthName : `${d.monthName} ${d.dayOfMonth}`}, Year ${d.year}`, x + 12, fy + 4);
-    const later = Weather.next && Math.floor(Weather.next.start / Clock.day) === today ? `, ${prettify(Weather.next.type).toLowerCase()} later` : '';
-    fill(200); text(`Weather: ${Weather.name()}${later}`, x + 12, fy + 21);
+    text(T('calendar.today', { date: d.newYear ? d.monthName : T('calendar.monthDay', { month: d.monthName, day: d.dayOfMonth }), year: d.year }), x + 12, fy + 4);
+    const later = Weather.next && Math.floor(Weather.next.start / Clock.day) === today ? T('calendar.later', { weather: nameOf(Weather.next.type).toLowerCase() }) : '';
+    fill(200); text(T('weather.begin', { name: Weather.name() }) + later, x + 12, fy + 21);
     const onToday = c.year === d.year && c.month === (d.newYear ? -1 : d.month);
-    button(x + w - 64, fy + 6, 52, 24, 'Today', !onToday, () => { const t = Clock.date(); c.year = t.year; c.month = t.newYear ? -1 : t.month; }, true);
+    button(x + w - 64, fy + 6, 52, 24, T('calendar.todayButton'), !onToday, () => { const t = Clock.date(); c.year = t.year; c.month = t.newYear ? -1 : t.month; }, true);
     noStroke(); fill('#8fd0ff'); circle(x + 16, fy + 44, 4);
-    fill(150); textSize(10); textAlign(LEFT, CENTER); text('the day you arrived', x + 24, fy + 44);
+    fill(150); textSize(10); textAlign(LEFT, CENTER); text(T('calendar.arrived'), x + 24, fy + 44);
     return top + h;
 }
 function hotbarLayout(){
@@ -6688,11 +7430,11 @@ function drawHotbar(){
     const held = heldItem();
     if(held){
         noStroke(); fill(0, 0, 0, 150); textSize(13); textAlign(CENTER, BOTTOM);
-        let label = prettify(held.id);
+        let label = nameOf(held.id);
         const m = held.get('mining'), w = waterOf(held);
-        if(m) label += `  (tier ${m.tier} ${m.classes[0]})`;
-        if(w) label += `  (${w.value}/${w.capacity} water)`;
-        if(held instanceof CropSeedItem) label += '  (plant on farmland)';
+        if(m) label += T('hotbar.tool', { tier: m.tier, tool: nameOf(m.classes[0]) });
+        if(w) label += T('hotbar.water', { v: w.value, c: w.capacity });
+        if(held instanceof CropSeedItem) label += T('hotbar.seed');
         text(label, width / 2 + 1, L.y - 15);
         fill(255); text(label, width / 2, L.y - 16);
     }
@@ -6708,9 +7450,9 @@ function inventoryLayout(){
 }
 function drawInventory(){
     const inv = player.inventory, L = inventoryLayout();
-    panel(L.x, L.y, L.w, L.h, 'Backpack');
+    panel(L.x, L.y, L.w, L.h, T('inv.backpack'));
     noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP);
-    text('Tab to close', L.x + L.w - 14, L.y + 13);
+    text(T('inv.tabClose'), L.x + L.w - 14, L.y + 13);
     const slots = inv.backpackSlots;
     for(let k = 0; k < slots.length; k++){
         const cx = k % L.cols, cy = Math.floor(k / L.cols);
@@ -6719,24 +7461,24 @@ function drawInventory(){
     // worn armor, left of the backpack
     const gx = L.x - 72;
     panel(gx, L.y, 64, L.h);
-    noStroke(); fill(200); textSize(11); textStyle(BOLD); textAlign(CENTER, TOP); text('Gear', gx + 32, L.y + 11); textStyle(NORMAL);
-    const hints = { head:'head', chest:'chest', legs:'legs', feet:'feet' };
-    ARMOR_SLOTS.forEach((s, k) => drawSlot(gx + 9, L.y + 30 + k * (SLOT + 4), slotRef(player.gear[s], 0), { hint: hints[s] }));
-    fill('#bcd6ff'); textSize(10.5); textAlign(CENTER, BOTTOM); text(`Def ${playerDefense()}`, gx + 32, L.y + L.h - 7);
+    noStroke(); fill(200); textSize(11); textStyle(BOLD); textAlign(CENTER, TOP); text(T('inv.gear'), gx + 32, L.y + 11); textStyle(NORMAL);
+    ARMOR_SLOTS.forEach((s, k) => drawSlot(gx + 9, L.y + 30 + k * (SLOT + 4), slotRef(player.gear[s], 0), { hint: T('armor.slot.' + s) }));
+    fill('#bcd6ff'); textSize(10.5); textAlign(CENTER, BOTTOM); text(T('inv.def', { def: playerDefense() }), gx + 32, L.y + L.h - 7);
     noStroke(); fill(150); textSize(10.5); textAlign(LEFT, BOTTOM);
-    const shiftHelp = openContainer() ? `Shift+click: to / from the ${GameUI.station.kind}` : 'Shift+click: hotbar <-> backpack, wear armor';
-    text(`Click two slots to swap  |  Drag to move  |  ${shiftHelp}  |  Right-click: split`, L.x + 14, L.y + L.h - 7);
+    const shiftHelp = openContainer() ? T('inv.shiftStation', { station: STATION_TITLES[GameUI.station.kind].toLowerCase() }) : T('inv.shiftDefault');
+    text(T('inv.help', { shift: shiftHelp }), L.x + 14, L.y + L.h - 7);
     if(L.craft){
         const c = L.craft;
-        panel(c.x, c.y, c.w, c.h, 'Crafting (hand)');
-        drawRecipeList(c.x + 10, c.y + 36, c.w - 20, c.h - 44, Recipe.for('hand'), 'hand', 'Craft', (r, shift) => craft(r, shift ? 64 : 1));
+        panel(c.x, c.y, c.w, c.h, T('inv.handCrafting'));
+        drawRecipeList(c.x + 10, c.y + 36, c.w - 20, c.h - 44, Recipe.for('hand'), 'hand', T('station.generic.craft'), (r, shift) => craft(r, shift ? 64 : 1));
     }
 }
 
 function stationLayout(){
     const st = GameUI.station, cb = st && blockAt(st.x, st.y), slots = cb && cb.box ? cb.box.size : 0;   // a container (chest) shows its slots in a grid
-    const w = slots ? 8 * (SLOT + SLOT_GAP) - SLOT_GAP + 28 : 460;
-    const h = slots ? Math.ceil(slots / 8) * (SLOT + SLOT_GAP) - SLOT_GAP + 62 : Math.min(height - 170, 560);
+    const farm = !!(cb && cb.seeds);   // farmland: seedling slots + water slot + water gauge
+    const w = farm ? (FARM.slots + 1) * (SLOT + SLOT_GAP) + 70 : slots ? 8 * (SLOT + SLOT_GAP) - SLOT_GAP + 28 : 460;
+    const h = farm ? 236 : slots ? Math.ceil(slots / 8) * (SLOT + SLOT_GAP) - SLOT_GAP + 62 : Math.min(height - 170, 560);
     const x = GameUI.inventoryOpen ? width / 2 + 8 : width / 2 - w / 2;
     return { x, y: Math.max(12, hotbarLayout().y - 44 - h), w, h };
 }
@@ -6745,33 +7487,34 @@ function drawStation(){
     if(!b) return;
     if(CRAFT_STATIONS.includes(s.kind)){
         // workbench (+ hand recipes), loom...: recipe menus (see defineStation)
-        const verb = STATION_VERBS[s.kind] ?? 'Craft';
+        const verb = STATION_VERBS[s.kind] ?? T('station.generic.craft');
         panel(L.x, L.y, L.w, L.h, STATION_TITLES[s.kind]);
-        noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text('E / Esc to close  |  Shift: craft max', L.x + L.w - 14, L.y + 13);
+        noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text(T('station.closeCraftMax'), L.x + L.w - 14, L.y + 13);
         const list = Recipe.for(s.kind, ...(STATION_ALSO[s.kind] ?? []));
         drawRecipeList(L.x + 10, L.y + 38, L.w - 20, L.h - 48, list, 'station', verb, (r, shift) => craft(r, shift ? 64 : 1));
         return;
     }
     if(b.box){
-        panel(L.x, L.y, L.w, L.h, `${STATION_TITLES[s.kind]} (${b.box.size} slots)`);
-        noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text('E / Esc to close', L.x + L.w - 14, L.y + 13);
+        panel(L.x, L.y, L.w, L.h, T('station.chestTitle', { name: STATION_TITLES[s.kind], n: b.box.size }));
+        noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text(T('station.close'), L.x + L.w - 14, L.y + 13);
         for(let k = 0; k < b.box.size; k++){
             const cx = k % 8, cy = Math.floor(k / 8);
             drawSlot(L.x + 14 + cx * (SLOT + SLOT_GAP), L.y + 36 + cy * (SLOT + SLOT_GAP), slotRef(b.box, k));
         }
-        button(L.x + L.w - 120, L.y + L.h - 26, 106, 20, 'Take all', !b.box.isEmpty, () => { b.box.emptyInto(player.inventory); }, true);
+        button(L.x + L.w - 120, L.y + L.h - 26, 106, 20, T('station.takeAll'), !b.box.isEmpty, () => { b.box.emptyInto(player.inventory); }, true);
         return;
     }
+    if(b.seeds){ drawFarmlandPanel(s, b, L); return; }
     // machines (forge, cooking pot, drying rack...): input -> fuel -> output (see defineStation)
     const M = MACHINES[s.kind], rack = M.noFuel;
     panel(L.x, L.y, L.w, L.h, STATION_TITLES[s.kind]);
-    noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text('E / Esc to close', L.x + L.w - 14, L.y + 13);
+    noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text(T('station.close'), L.x + L.w - 14, L.y + 13);
     const top = L.y + 40, row = SLOT + SLOT_GAP;
     fill(200); textSize(11); textAlign(LEFT, TOP);
-    text('Input', L.x + 16, top); if(!rack) text('Fuel', L.x + 16 + 4 * row + 14, top); text('Output', L.x + L.w - 16 - 2 * row + SLOT_GAP, top);
+    text(T('machine.input'), L.x + 16, top); if(!rack) text(T('machine.fuel'), L.x + 16 + 4 * row + 14, top); text(T('machine.output'), L.x + L.w - 16 - 2 * row + SLOT_GAP, top);
     for(let k = 0; k < b.input.size; k++) drawSlot(L.x + 16 + k * row, top + 16, slotRef(b.input, k), { hint: M.hint });
     const fx = L.x + 16 + 4 * row + 14;
-    if(!rack) drawSlot(fx, top + 16, slotRef(b.fuel, 0), { hint:'fuel', tint: b.lit ? 'rgba(255,150,46,0.25)' : null });
+    if(!rack) drawSlot(fx, top + 16, slotRef(b.fuel, 0), { hint: T('machine.fuelHint'), tint: b.lit ? 'rgba(255,150,46,0.25)' : null });
     for(let k = 0; k < b.output.size; k++) drawSlot(L.x + L.w - 16 - 2 * row + SLOT_GAP + k * row, top + 16, slotRef(b.output, k));
     // progress + fuel bars
     const r = b.active ? Recipe.byId(b.active) : null, by = top + 16 + SLOT + 12, bw = L.w - 32;
@@ -6783,11 +7526,49 @@ function drawStation(){
     }
     const working = b.status.startsWith(M.verb);
     fill(working ? '#ffd28a' : 200); textSize(12); textAlign(LEFT, TOP);
-    text(`${b.status}${r && working ? `  (${r.time.toFixed(0)}s each)` : ''}`, L.x + 16, by + 26);
+    text(b.status + (r && working ? T('machine.eachTime', { secs: r.time.toFixed(0) }) : ''), L.x + 16, by + 26);
     fill(150); textSize(10.5);
     text(M.blurb, L.x + 16, by + 44);
     fill(210); textSize(12); text(M.listTitle, L.x + 16, by + 66);
     drawRecipeList(L.x + 10, by + 84, L.w - 20, L.y + L.h - by - 94, Recipe.for(s.kind), 'station', null, null, b.input);
+}
+
+/** The farmland panel: FARM.slots seedling slots (state + growth under each), the water slot, the water gauge and Harvest. */
+function drawFarmlandPanel(s, b, L){
+    const seedlings = farmSeedlings(b), byK = {};
+    for(const e of seedlings) byK[e.k] = e;
+    const crop = farmCrop(b);
+    panel(L.x, L.y, L.w, L.h, nameOf('farmland') + (crop ? T('farmPanel.crop', { crop: nameOf(crop) }) : ''));
+    noStroke(); fill(170); textSize(11); textAlign(RIGHT, TOP); text(T('station.close'), L.x + L.w - 14, L.y + 13);
+    const top = L.y + 40, row = SLOT + SLOT_GAP, wx = L.x + 16 + FARM.slots * row + 22;
+    fill(200); textSize(11); textAlign(LEFT, TOP);
+    text(T('farmPanel.seedlings'), L.x + 16, top); text(T('farmPanel.waterIn'), wx, top);
+    for(let k = 0; k < FARM.slots; k++){
+        const sx = L.x + 16 + k * row, e = byK[k];
+        const tint = !e ? null : e.info.rot ? 'rgba(140,100,40,0.35)' : e.info.ripe ? 'rgba(120,220,110,0.28)' : e.p.dry > 0 ? 'rgba(255,170,70,0.25)' : null;
+        drawSlot(sx, top + 16, slotRef(b.seeds, k), { hint: T('farmPanel.seedHint'), tint });
+        if(!e) continue;
+        // growth toward ripe, and the state
+        const c = e.info.crop, grown = e.info.ripe || e.info.rot ? 1 : Math.min(1, e.p.age / c.ripeAge);
+        noStroke(); fill(255, 255, 255, 25); rect(sx, top + 16 + SLOT + 4, SLOT, 4, 2);
+        fill(e.info.rot ? '#a08050' : e.info.ripe ? '#8fe39a' : '#d8e070'); rect(sx, top + 16 + SLOT + 4, SLOT * grown, 4, 2);
+        fill(e.p.dry > 0 ? '#ffb070' : 200); textSize(10); textAlign(CENTER, TOP);
+        text(e.p.dry > 0 && !e.info.rot ? T('farmPanel.dry') : seedlingState(e.info), sx + SLOT / 2, top + 16 + SLOT + 11);
+    }
+    drawSlot(wx, top + 16, slotRef(b.intake, 0), { hint: T('farmPanel.waterHint') });
+    // water gauge: 0..waterMax, then the overflow above it (up to floodMax)
+    const gy = top + 16 + SLOT + 34, bw = L.w - 32, over = Math.max(0, b.water - FARM.waterMax);
+    noStroke(); fill(255, 255, 255, 25); rect(L.x + 16, gy, bw, 10, 5);
+    fill('#4aa3ff'); rect(L.x + 16, gy, bw * Math.min(1, b.water / FARM.waterMax), 10, 5);
+    if(over > 0){ fill('#a8ecff'); rect(L.x + 16, gy + 13, bw * Math.min(1, over / (FARM.floodMax - FARM.waterMax)), 4, 2); }
+    fill(over > 0 ? '#a8ecff' : b.water <= 0 ? '#ffb070' : '#bfe3ff'); textSize(12); textAlign(LEFT, TOP);
+    const ci = cellIndex(s.x, s.y), src = nextToWater(ci) ? irrigationSource(ci) : null;
+    const irr = src == null ? '' : src < 0 ? T('farmPanel.irrigationDry') : T('farmPanel.irrigated', { n: Theaya.water[src], max: WATER_UNITS });
+    text(T('farmPanel.water', { w: Math.round(b.water), max: FARM.waterMax }) + (over > 0 ? T('farmPanel.overTop', { n: Math.round(over) }) : '') + irr, L.x + 16, gy + 20);
+    fill(150); textSize(10.5);
+    text(T('farmPanel.waterSlotHelp', { unit: FARM.bucketUnit, max: FARM.waterMax }), L.x + 16, gy + 38);
+    const hl = farmHarvestLabel(b);
+    button(L.x + 16, L.y + L.h - 32, Math.min(bw, 280), 22, hl ?? T('farmPanel.nothingReady'), !!hl, () => harvestFarmland(s.x, s.y), true);
 }
 
 /**
@@ -6809,11 +7590,11 @@ function drawRecipeList(x, y, w, h, recipes, scrollKey, verb, onCraft, source = 
         drawItemIcon(r.output.id, x + 22, ry + rowH / 2 - 2, 32);
         region(x, ry, onCraft ? w - 80 : w, rowH - 4, { kind:'recipe', itemId: r.output.id, recipe: r, scroll: scrollKey });
         fill(ok ? 245 : 175); textSize(13); textAlign(LEFT, TOP);
-        text(`${prettify(r.output.id)}${r.output.count > 1 ? ' x' + r.output.count : ''}`, x + 44, ry + 5);
+        text(`${nameOf(r.output.id)}${r.output.count > 1 ? ' x' + r.output.count : ''}`, x + 44, ry + 5);
         textSize(11);
         let tx = x + 44;
-        const parts = Object.entries(r.inputs).map(([key, n]) => ({ t: `${n} ${Recipe.label(key)}`, ok: inv.countOf(key) >= n }));
-        if(r.time) parts.push({ t: `${r.time.toFixed(0)}s`, ok: true, note: true });
+        const parts = Object.entries(r.inputs).map(([key, n]) => ({ t: T('item.count', { n, name: Recipe.label(key) }), ok: inv.countOf(key) >= n }));
+        if(r.time) parts.push({ t: T('recipe.time', { secs: r.time.toFixed(0) }), ok: true, note: true });
         for(const p of parts){
             fill(p.note ? '#ffd28a' : p.ok ? '#8fe39a' : '#ff8a7a');
             text(p.t, tx, ry + 24);
@@ -6873,104 +7654,118 @@ function drawToasts(){
         y -= h + 4;
     }
 }
-/** Every control, shown on the HUD (right side) and in the pause menu. */
-const CONTROLS = [
-    ['Left-click', 'move there (or next to it)'],
-    ['Left-click + tool', 'walk there and use it'],
-    ['Right-click a cell', 'action wheel'],
-    ['Left-click a creature', 'attack it'],
-    ['Tab', 'inventory'],
-    ['E', 'open the station next to you'],
-    ['F', 'eat / drink / wear / place torch'],
-    ['1-7 / wheel', 'hotbar'],
-    ['Esc', 'close / cancel'],
-    ['K', 'skills and upgrades'],
-    ['Shift', 'sneak (Hunter skill)'],
-    ['P', 'pause'],
-];
+/** Every control, shown on the HUD (right side) and in the pause menu: [key, what it does] in the current language. */
+const CONTROL_IDS = ['leftClick', 'leftClickTool', 'rightClick', 'leftClickCreature', 'tab', 'e', 'f', 'hotbar', 'esc', 'k', 'shift', 'p'];
+const controlsList = () => CONTROL_IDS.map(id => [T(`controls.${id}.key`), T(`controls.${id}.what`)]);
 function drawHelp(top = 12){
     if(!GameUI.showHelp) return;
-    const lines = CONTROLS.map(([k, v]) => `${k}: ${v}`);
+    const lines = controlsList().map(([k, v]) => T('controls.line', { key: k, what: v }));
     textSize(11); textAlign(RIGHT, TOP); noStroke();
     lines.forEach((l, k) => { fill(0, 0, 0, 130); text(l, width - 11, top + 1 + k * 15); fill(235); text(l, width - 12, top + k * 15); });
 }
-/** The pause menu (P): Resume, Controls, show / hide the on-screen controls list, Restart. */
+/** The pause menu (P): Resume, Settings, Controls, show / hide the on-screen controls list, Restart. */
 function drawPauseMenu(){
     noStroke(); fill(6, 8, 14, 165); rect(0, 0, width, height);
     region(0, 0, width, height, { kind:'pauseScreen' });   // nothing under the menu reacts to the mouse
-    const view = GameUI.pauseView, w = 320;
-    const h = view === 'controls' ? 110 + CONTROLS.length * 20 : view === 'restart' ? 170 : 366;
+    const view = GameUI.pauseView, w = 320, controls = controlsList();
+    const h = view === 'controls' ? 110 + controls.length * 20 : view === 'restart' ? 170 : 410;
     const x = Math.round(width / 2 - w / 2), y = Math.round(height / 2 - h / 2);
     panel(x, y, w, h);
     noStroke(); fill(255); textAlign(CENTER, TOP); textStyle(BOLD); textSize(22);
-    text(view === 'controls' ? 'Controls' : view === 'restart' ? 'Restart?' : 'Paused', x + w / 2, y + 16);
+    text(T(view === 'controls' ? 'pause.controlsTitle' : view === 'restart' ? 'pause.restartTitle' : 'pause.title'), x + w / 2, y + 16);
     textStyle(NORMAL);
     const bx = x + 30, bw = w - 60, bh = 34;
     if(view === 'controls'){
         textSize(12);
-        CONTROLS.forEach(([k, v], n) => {
+        controls.forEach(([k, v], n) => {
             const ty = y + 56 + n * 20;
             fill('#ffd75e'); textAlign(RIGHT, TOP); text(k, x + 136, ty);
             fill(225); textAlign(LEFT, TOP); text(v, x + 148, ty);
         });
-        button(bx, y + h - bh - 14, bw, bh, 'Back', true, () => { GameUI.pauseView = 'main'; }, true);
+        button(bx, y + h - bh - 14, bw, bh, T('ui.back'), true, () => { GameUI.pauseView = 'main'; }, true);
         return;
     }
     if(view === 'restart'){
         fill(215); textSize(12.5); textAlign(CENTER, TOP);
-        text(Tutorial.active ? 'Start the tutorial over?' : `Start over in a fresh copy of this world (seed ${LAUNCH.seed})?\nEverything in this one is lost.`, x + 20, y + 54, w - 40);
+        text(Tutorial.active ? T('pause.restartTutorial') : T('pause.restartWorld', { seed: LAUNCH.seed }), x + 20, y + 54, w - 40);
         const half = (bw - 10) / 2;
-        button(bx, y + h - bh - 18, half, bh, 'Cancel', true, () => { GameUI.pauseView = 'main'; }, true);
-        button(bx + half + 10, y + h - bh - 18, half, bh, 'Restart', true, () => location.reload(), true);
+        button(bx, y + h - bh - 18, half, bh, T('ui.cancel'), true, () => { GameUI.pauseView = 'main'; }, true);
+        button(bx + half + 10, y + h - bh - 18, half, bh, T('pause.restart'), true, () => location.reload(), true);
         return;
     }
     fill(190); textSize(12); textAlign(CENTER, TOP);
-    text(`${Clock.dateText()}  -  ${Clock.timeText()}  -  Day ${Math.max(1, Clock.dayIndex - Clock.startDay + 1)}`, x + w / 2, y + 48);
-    fill(140); textSize(11); text(Tutorial.active ? 'Tutorial' : `World seed: ${LAUNCH.seed}`, x + w / 2, y + 66);
+    text(T('pause.when', { date: Clock.dateText(), time: Clock.timeText(), day: Math.max(1, Clock.dayIndex - Clock.startDay + 1) }), x + w / 2, y + 48);
+    fill(140); textSize(11); text(Tutorial.active ? T('pause.tutorial') : T('pause.seed', { seed: LAUNCH.seed }), x + w / 2, y + 66);
     let by = y + 92;
     const add = (label, fn) => { button(bx, by, bw, bh, label, true, fn, true); by += bh + 10; };
-    add('Resume  (P)', () => setPaused(false));
-    add('Controls', () => { GameUI.pauseView = 'controls'; });
-    add(`Controls list on screen: ${GameUI.showHelp ? 'On' : 'Off'}`, () => { GameUI.showHelp = !GameUI.showHelp; });
-    add('Restart', () => { GameUI.pauseView = 'restart'; });
-    add('Main Menu', () => relaunch(''));
-    add('Return to Home Page', () => { window.location.href = 'index.html'; });   // the game picker
+    add(T('pause.resume'), () => setPaused(false));
+    add(T('pause.settings'), () => openSettings());   // a menu of its own (see drawSettingsMenu)
+    add(T('pause.controls'), () => { GameUI.pauseView = 'controls'; });
+    add(T(GameUI.showHelp ? 'pause.helpOn' : 'pause.helpOff'), () => { GameUI.showHelp = !GameUI.showHelp; });
+    add(T('pause.restart'), () => { GameUI.pauseView = 'restart'; });
+    add(T('pause.mainMenu'), () => relaunch(''));
+    add(T('pause.home'), () => { window.location.href = 'index.html'; });   // the game picker
+}
+
+/* ----- Settings (pause menu > Settings): its own menu, the game stays paused while it's open ----- */
+function openSettings(){ GameUI.settingsOpen = true; }
+function closeSettings(){ GameUI.settingsOpen = false; }   // back to the pause menu
+/** The settings menu: language (more settings go here). Saved between visits, see Settings. */
+function drawSettingsMenu(){
+    noStroke(); fill(6, 8, 14, 185); rect(0, 0, width, height);
+    region(0, 0, width, height, { kind:'pauseScreen' });   // nothing under the menu reacts to the mouse
+    const w = 360, rowH = 40, h = 150 + LANGUAGES.length * rowH;
+    const x = Math.round(width / 2 - w / 2), y = Math.round(height / 2 - h / 2);
+    panel(x, y, w, h);
+    noStroke(); fill(255); textAlign(CENTER, TOP); textStyle(BOLD); textSize(22);
+    text(T('settings.title'), x + w / 2, y + 16);
+    textStyle(NORMAL);
+    // language
+    fill(220); textSize(13); textAlign(LEFT, TOP); text(T('settings.language'), x + 30, y + 58);
+    fill(140); textSize(10.5); text(T('settings.languageHelp'), x + 30, y + 76);
+    const cur = currentLanguage(), bx = x + 30, bw = w - 60;
+    LANGUAGES.forEach((l, k) => {
+        const by = y + 96 + k * rowH, on = l.id === cur;
+        button(bx, by, bw, 32, (on ? '● ' : '○ ') + l.label, !on, () => Settings.setLanguage(l.id), true);
+    });
+    button(bx, y + h - 48, bw, 34, T('ui.back'), true, () => closeSettings(), true);
 }
 function itemInfoLines(item){
-    const lines = [prettify(item.id)];
+    const lines = [nameOf(item.id)];
     const m = item.get('mining'), d = item.get('durability'), f = item.get('fuel'), c = item.get('consume'), r = item.get('resource');
     const w = waterOf(item);
-    if(m) lines.push(`${prettify(m.classes[0])} - tier ${m.tier}, speed ${m.speed.toFixed(1)}`);
-    if(m && m.classes.includes('hoe')) lines.push(`Tills grass into farmland, harvests tier ${m.tier} crops`);
-    if(m && m.classes.includes('shovel')) lines.push('Digs dirt out of grass (left-click bare grass)');
-    if(d) lines.push(`Durability ${Math.ceil(d.value)}/${d.max}`);
-    if(w) lines.push(`Water ${w.value}/${w.capacity}${item instanceof Bucket ? ' (for farmland)' : ''}`);
-    if(c) lines.push(`Food: +${c.hunger} hunger, +${c.saturation} saturation${c.health ? `, +${c.health} health` : ''}`);
+    if(m) lines.push(T('tip.tool', { tool: nameOf(m.classes[0]), tier: m.tier, speed: m.speed.toFixed(1) }));
+    if(m && m.classes.includes('hoe')) lines.push(T('tip.hoe', { tier: m.tier }));
+    if(m && m.classes.includes('shovel')) lines.push(T('tip.shovel'));
+    if(d) lines.push(T('tip.durability', { v: Math.ceil(d.value), max: d.max }));
+    if(w) lines.push(T('tip.water', { v: w.value, c: w.capacity }) + (item instanceof Bucket ? T('tip.forFarmland') : ''));
+    if(c) lines.push(T('tip.food', { hunger: c.hunger, sat: c.saturation }) + (c.health ? T('use.ateHealth', { hp: c.health }) : ''));
+    const q = item.get('quench');
+    if(q) lines.push(T('tip.quench', { n: q.amount }));
     if(item instanceof CropSeedItem){
         const crop = Crops.get(item.crop);
-        if(crop) lines.push(`Ripe after ${crop.ripeAge} days on watered farmland`, crop.tier > 0 ? `Harvest needs a tier ${crop.tier}+ hoe` : 'Harvest by hand');
+        if(crop) lines.push(T('tip.ripeAfter', { days: crop.ripeAge }), crop.tier > 0 ? T('tip.harvestTier', { tier: crop.tier }) : T('tip.harvestHand'));
     }
-    if(Crops.get(item.id) && !c) lines.push(item.id === 'hemp' ? 'Spin it into cloth on the loom' : 'Cook it in the cooking pot');
+    if(Crops.get(item.id) && !c) lines.push(T(item.id === 'hemp' ? 'tip.spinHemp' : 'tip.cookIt'));
     const pz = item.get('poisonous'), atk = item.get('attack'), L = item.get('launcher'), ammo = item.get('ammoStats');
-    if(pz) lines.push(`Raw: ${Math.round(pz.chance * 100)}% chance of poison. Cook it in the cooking pot.`);
+    if(pz) lines.push(T('tip.raw', { pct: Math.round(pz.chance * 100) }));
     const rg = item.get('regeneration');
-    if(rg) lines.push(`Regenerates +${rg.rate} health/s for ${rg.seconds}s`);
-    if(item.id === 'grease') lines.push('From cooking meat. Makes grease torches, oil lamps', 'and better food in the cooking pot.');
-    if(isCookable(item) && !waterOf(item)) lines.push('Can go in the cooking pot');
-    if(L) lines.push(`Ranged: ${L.range} cells, x${L.power} arrow damage, ${L.cooldown}s per shot`);
-    else if(atk && item.hasTag('weapon')) lines.push(`Melee: ${atk.damage} damage, reach 1 cell`);
-    if(ammo) lines.push(`Arrow: ${ammo.damage} damage`);
-    if(item.getDefense && armorSlotOf(item)) lines.push(`Armor (${armorSlotOf(item)}): ${item.getDefense()} defense - shift-click to wear`);
+    if(rg) lines.push(T('tip.regen', { rate: rg.rate, secs: rg.seconds }));
+    if(item.id === 'grease') lines.push(T('tip.grease1'), T('tip.grease2'));
+    if(isCookable(item) && !waterOf(item)) lines.push(T('tip.cookable'));
+    if(L) lines.push(T('tip.ranged', { range: L.range, power: L.power, cd: L.cooldown }));
+    else if(atk && item.hasTag('weapon')) lines.push(T('tip.melee', { dmg: atk.damage }));
+    if(ammo) lines.push(T('tip.arrow', { dmg: ammo.damage }));
+    if(item.getDefense && armorSlotOf(item)) lines.push(T('tip.armor', { slot: T('armor.slot.' + armorSlotOf(item)), def: item.getDefense() }));
     if(item instanceof BlockItem){
         const bd = Blocks.get(item.block);
-        lines.push(bd && bd.passableFor && bd.passableFor.includes('player') ? 'Placeable: only you can walk through it'
-                 : bd && !bd.solid ? 'Placeable: you can walk over it' : 'Placeable block');
-        if(bd && bd.safe) lines.push(`Lights the dark; no monsters spawn within ${bd.safe} cells`, 'F: place it where you stand');
-        if(bd && bd.siege) lines.push(`Monsters can break it (zombie ${CREATURES.zombie.breaks[bd.siege]}s, orc ${CREATURES.orc.breaks[bd.siege]}s)`);
+        lines.push(T(bd && bd.passableFor && bd.passableFor.includes('player') ? 'tip.placeOnlyYou' : bd && !bd.solid ? 'tip.placeWalkOver' : 'tip.placeBlock'));
+        if(bd && bd.safe) lines.push(T('tip.light', { n: bd.safe }), T('tip.lightF'));
+        if(bd && bd.siege) lines.push(T('tip.siege', { zombie: CREATURES.zombie.breaks[bd.siege], orc: CREATURES.orc.breaks[bd.siege] }));
     }
-    if(r && r.material) lines.push(`Material: ${prettify(r.material)} (tier ${r.tier})`);
-    if(f) lines.push(`Fuel: ${f.ticks} (${f.ticks * FORGE.fuelSeconds}s in the forge)`);
-    if(isSmeltable(item)) lines.push('Can go in the forge');
+    if(r && r.material) lines.push(T('tip.material', { material: nameOf(r.material), tier: r.tier }));
+    if(f) lines.push(T('tip.fuel', { n: f.ticks, secs: f.ticks * FORGE.fuelSeconds }));
+    if(isSmeltable(item)) lines.push(T('tip.smeltable'));
     if(item.count > 1) lines.push(`x${item.count}`);
     return lines;
 }
@@ -6979,7 +7774,7 @@ function drawQuickHint(){
     if(GameUI.wheel || (GameUI.press && GameUI.press.dragging) || uiHit(mouse.rawX, mouse.rawY)) return;
     const c = areaZones.home.toCell(mouse.x, mouse.y), q = c ? quickActionFor(c.x, c.y, mouse.x, mouse.y) : null;
     if(!q) return;
-    const t = q.reason ? `${q.label}: ${q.reason}` : q.label;
+    const t = q.reason ? T('quick.labelReason', { label: q.label, reason: q.reason }) : q.label;
     textSize(11.5); const w = textWidth(t) + 14;
     const x = Math.min(width - w - 6, mouse.rawX + 16), y = mouse.rawY + 14;
     noStroke(); fill(10, 12, 18, 215); rect(x, y, w, 20, 6);
@@ -7010,6 +7805,7 @@ const hudLayer = {
         resetDrawModes();
         GameUI.regions = [];
         textFont('sans-serif');
+        textWrap(currentLanguage() === 'japanese' ? CHAR : WORD);   // Japanese has no spaces: wrap boxed text between characters
         if(Menu.active){ drawMenu(); pop(); return; }
         const statsBottom = drawStats();
         drawHotbar();
@@ -7027,7 +7823,7 @@ const hudLayer = {
             drawItemIcon(refItem(GameUI.press.ref), mouse.rawX, mouse.rawY, SLOT * 0.85);
         }
         if(Tutorial.active) drawTutorial(statsBottom + 10);
-        if(GameUI.paused) drawPauseMenu();
+        if(GameUI.paused) GameUI.settingsOpen ? drawSettingsMenu() : drawPauseMenu();   // settings replace the pause menu while open
         else { drawQuickHint(); drawTooltip(); }
         pop();
     },
@@ -7066,10 +7862,10 @@ const Loading = {
 };
 /** What the loading screen says while the page reloads into `hash`. */
 function loadingTextFor(hash){
-    if(hash === 'tutorial') return ['Preparing the tutorial...', 'Setting up a calm practice world'];
+    if(hash === 'tutorial') return [T('loading.tutorial'), T('loading.tutorialSub')];
     const m = /^seed=(-?\d+)$/.exec(hash);
-    if(m) return ['Generating your world...', 'Seed ' + m[1]];
-    return ['Loading...', ''];
+    if(m) return [T('loading.world'), T('loading.seed', { seed: m[1] })];
+    return [T('loading.loading'), ''];
 }
 /** Restart the page with a new URL hash ('' = back to the start menu). */
 function relaunch(hash){
@@ -7089,8 +7885,8 @@ const Menu = {
     ensureInput(){
         if(this.input) return this.input;
         const el = document.createElement('input');
-        el.type = 'text'; el.maxLength = 40; el.placeholder = 'Random seed'; el.autocomplete = 'off'; el.spellcheck = false;
-        el.setAttribute('aria-label', 'World seed');
+        el.type = 'text'; el.maxLength = 40; el.placeholder = T('menu.seedPlaceholder'); el.autocomplete = 'off'; el.spellcheck = false;
+        el.setAttribute('aria-label', T('menu.worldSeed'));
         Object.assign(el.style, {
             position:'fixed', display:'none', zIndex:'10', boxSizing:'border-box', padding:'0 12px', textAlign:'center',
             font:'16px sans-serif', color:'#fff', background:'#10141c', border:'1px solid rgba(255,255,255,0.35)', borderRadius:'6px', outline:'none',
@@ -7134,31 +7930,35 @@ function drawMenu(){
     const x = Math.round(width / 2 - w / 2), y = Math.round(height / 2 - h / 2);
     panel(x, y, w, h);
     noStroke(); fill('#ffd75e'); textAlign(CENTER, TOP); textStyle(BOLD); textSize(30);
-    text('World of Theaya', x + w / 2, y + 22);
+    text(T('menu.title'), x + w / 2, y + 22);
     textStyle(NORMAL);
     const bx = x + 40, bw = w - 80;
     if(!newView){
         Menu.hideInput();
-        fill(190); textSize(13); text('How would you like to begin?', x + w / 2, y + 64);
+        fill(190); textSize(13); text(T('menu.begin'), x + w / 2, y + 64);
         let by = y + 100;
         const entry = (label, desc, fn) => {
             button(bx, by, bw, 44, label, true, fn, true);
             noStroke(); fill(150); textSize(11); textAlign(CENTER, TOP); text(desc, bx, by + 50, bw);
             by += 82;
         };
-        entry('Play the Tutorial', 'Learn to move, the action wheel, your inventory and workbenches.', () => relaunch('tutorial'));
-        entry('Start a New Game', 'Choose a world seed (or leave it blank) and set out.', () => { Menu.view = 'new'; });
-        button(bx, y + h - 52, bw, 30, 'Home Page', true, () => { window.location.href = 'index.html'; }, true);
+        entry(T('menu.tutorial'), T('menu.tutorialDesc'), () => relaunch('tutorial'));
+        entry(T('menu.newGame'), T('menu.newGameDesc'), () => { Menu.view = 'new'; });
+        button(bx, y + h - 52, bw - 110, 30, T('menu.home'), true, () => { window.location.href = 'index.html'; }, true);
+        // the language can be picked here too, before a game starts (in a game: pause menu > Settings)
+        const other = LANGUAGES[(LANGUAGES.findIndex(l => l.id === currentLanguage()) + 1) % LANGUAGES.length];
+        button(bx + bw - 100, y + h - 52, 100, 30, other.label, true, () => Settings.setLanguage(other.id), true);
         return;
     }
-    fill(190); textSize(13); text('New Game', x + w / 2, y + 64);
-    fill(225); textAlign(LEFT, TOP); text('World seed', bx, y + 92);
+    fill(190); textSize(13); text(T('menu.newGameTitle'), x + w / 2, y + 64);
+    fill(225); textAlign(LEFT, TOP); text(T('menu.worldSeed'), bx, y + 92);
     Menu.placeInput(bx, y + 114, bw, 38);
+    if(Menu.input) Menu.input.placeholder = T('menu.seedPlaceholder');   // follows a language switch
     fill(150); textSize(11); textAlign(CENTER, TOP);
-    text('Leave it blank for a random world. Numbers and words both work: the same seed always makes the same map.', bx, y + 164, bw);
+    text(T('menu.seedHelp'), bx, y + 164, bw);
     const half = (bw - 10) / 2;
-    button(bx, y + h - 56, half, 36, 'Back', true, () => { Menu.view = 'main'; }, true);
-    button(bx + half + 10, y + h - 56, half, 36, 'Start', true, () => Menu.startNew(), true);
+    button(bx, y + h - 56, half, 36, T('ui.back'), true, () => { Menu.view = 'main'; }, true);
+    button(bx + half + 10, y + h - 56, half, 36, T('menu.start'), true, () => Menu.startNew(), true);
 }
 
 /* ----- Tutorial ----- */
@@ -7221,7 +8021,7 @@ function tutGrassCell(){
 }
 /** The first farmland cell (that has a plant when `planted`), or null. */
 function tutFarmland(planted = false){
-    for(let i = 0; i < Theaya.blocks.length; i++){ const b = Theaya.blocks[i]; if(b && b.id === 'farmland' && (!planted || b.plant)) return cellXY(i); }
+    for(let i = 0; i < Theaya.blocks.length; i++){ const b = Theaya.blocks[i]; if(b && b.id === 'farmland' && (!planted || (b.seeds && !b.seeds.isEmpty))) return cellXY(i); }
     return null;
 }
 /** Select the hotbar slot holding this item id. */
@@ -7297,17 +8097,20 @@ function tutEnsure(key, n){
     const id = key === 'planks' ? Tutorial.planks : key, have = player.inventory.countOf(id);
     if(have < n) giveItems(id, n - have);
 }
-/** A step that has the player craft `id` at the workbench. `cost` is shown in the text, `ensure` = [[item, amount], ...] topped up on entry. */
+/**
+ * A step that has the player craft `id` at the workbench. `title` / `cost` are text keys (the cost is shown in the
+ * instructions), `ensure` = [[item, amount], ...] topped up on entry.
+ */
 function tutCraftStep(id, title, cost, ensure){
-    const name = prettify(id);
     return {
         title,
         text(){
-            if(GameUI.station && GameUI.station.kind === 'workbench') return `The workbench lists the ${name} (${cost}). Craft it with its Craft button.`;
+            const v = { name: nameOf(id), cost: T(cost) };
+            if(GameUI.station && GameUI.station.kind === 'workbench') return T('tut.craft.listed', v);
             const b = tutBench(), pc = playerCell();
-            if(!b) return 'Place a workbench first.';
-            if(!pc || hexDist(pc, b) > 1) return `Craft a ${name} (${cost}) at the workbench. Walk next to the glowing workbench, hover over it and press E.`;
-            return `Hover your mouse over the workbench and press E to open it, then craft the ${name} (${cost}).`;
+            if(!b) return T('tut.placeBenchFirst');
+            if(!pc || hexDist(pc, b) > 1) return T('tut.craft.walk', v);
+            return T('tut.craft.hover', v);
         },
         enter(){ for(const [k, n] of ensure) tutEnsure(k, n); },
         target: () => GameUI.station ? null : tutBench(),
@@ -7343,118 +8146,113 @@ const Tutorial = {
     planks: `${logTypes[0]}_planks`,
     /** Each step: title, text() (the instruction; may change as you progress), enter() (set up), target() (cell to highlight), done() (finished?). */
     steps: [
+        // title = a text key; text() returns the instruction (it may change as you progress). All text: 'tut.*' in THEAYA_TEXT.
         {
-            title: 'Health',
+            title: 'tut.health.title',
             manual: true,
             focus: () => [tutStatRow(0)],
-            text: () => `The red bar (top left) is your health. It refills slowly while hunger and thirst are both at ${SURVIVAL.regenAbove} or more. Monsters, poison and starving hurt it. At 0 you wake up back at camp.`,
+            text: () => T('tut.health.text', { n: SURVIVAL.regenAbove }),
         },
         {
-            title: 'Hunger and thirst',
+            title: 'tut.needs.title',
             manual: true,
             focus: () => [tutStatRow(1), tutStatRow(2)],
-            text: () => 'Hunger (orange) and thirst (blue) drain as time passes: faster when you walk, and in hot or cold weather. Food adds saturation, which drains before hunger does. Hold food or a full canteen and press F.',
+            text: () => T('tut.needs.text'),
         },
         {
-            title: 'Running low',
+            title: 'tut.low.title',
             manual: true,
             focus: () => [tutStatRow(0), tutStatRow(1), tutStatRow(2)],
-            text: () => `Below ${player.nutritionRules.hunger.threshold} hunger or ${player.nutritionRules.thirst.threshold} thirst you start losing health. Thirst hurts about twice as much, and both low together hurts more. The bars show the warning. (Drain is paused here.)`,
+            text: () => T('tut.low.text', { hunger: player.nutritionRules.hunger.threshold, thirst: player.nutritionRules.thirst.threshold }),
         },
         {
-            title: 'Experience',
+            title: 'tut.xp.title',
             manual: true,
             focus: () => [tutStatRow(3)],
-            text: () => 'The green bar is experience. Fill it to level up, then pick a new skill or upgrade. Press K any time to see the ones you have.',
+            text: () => T('tut.xp.text'),
         },
         {
-            title: 'Moving around',
-            text: () => 'Left-click a cell and your character walks there. Walk onto the glowing cell.',
+            title: 'tut.move.title',
+            text: () => T('tut.move.text'),
             enter(){ Tutorial.cell = tutWalkCell(); },
             target: () => Tutorial.cell,
             done(){ const pc = playerCell(); return !Tutorial.cell || (pc && hexDist(pc, Tutorial.cell) === 0); },
         },
         {
-            title: 'The cell action wheel',
-            text: () => 'Right-click a cell to open its action wheel: every action possible there, from moving to gathering. Right-click the glowing fern.',
+            title: 'tut.wheel.title',
+            text: () => T('tut.wheel.text'),
             enter(){ Tutorial.cell = tutFernCell(); },
             target: () => Tutorial.cell,
             done(){ const w = GameUI.wheel, c = Tutorial.cell; return !c || (w && w.x === c.x && w.y === c.y); },
         },
         {
-            title: 'Choose an action',
-            text: () => GameUI.wheel ? 'Click "Gather plant fibers". Options marked "Walks there first" move you over by themselves. Esc closes the wheel.'
-                                     : 'The wheel closed. Right-click the glowing fern again and choose "Gather plant fibers".',
+            title: 'tut.choose.title',
+            text: () => T(GameUI.wheel ? 'tut.choose.open' : 'tut.choose.closed', { gather: T('wheel.gatherFibers'), walks: T('tut.walksFirst') }),
             enter(){ Tutorial.fibers = player.inventory.countOf('plant_fiber'); },
             target: () => Tutorial.cell,
-            focus: () => [tutWheelOption(o => /Gather/.test(o.label))],
+            focus: () => [tutWheelOption(o => o.id === 'gather')],
             done(){ return !Tutorial.cell || player.inventory.countOf('plant_fiber') > Tutorial.fibers; },
         },
         {
-            title: 'Your inventory',
-            text: () => 'Press Tab to open your inventory. The bottom row is the hotbar (keys 1-7 or the mouse wheel pick a slot). You found planks, plant fibers and flint: craft everything else yourself.',
-            enter(){ giveItems(Tutorial.planks, 30); giveItems('plant_fiber', 10); giveItems('flint', 2); notify('You found planks, plant fibers and flint.', '#a6f0a0'); },
+            title: 'tut.inventory.title',
+            text: () => T('tut.inventory.text'),
+            enter(){ giveItems(Tutorial.planks, 30); giveItems('plant_fiber', 10); giveItems('flint', 2); notify(T('tut.foundItems'), '#a6f0a0'); },
             focus: () => [tutHotbarRect(), GameUI.inventoryOpen ? tutBackpackRect() : null],
             done: () => GameUI.inventoryOpen,
         },
         {
-            title: 'Moving items',
-            text: () => GameUI.inventoryOpen ? 'Drag the planks onto another slot, or click them and then click a destination slot. Shift-click sends a stack between the hotbar and the backpack.'
-                                              : 'Press Tab to open your inventory again.',
+            title: 'tut.moveItems.title',
+            text: () => T(GameUI.inventoryOpen ? 'tut.moveItems.open' : 'tut.moveItems.closed'),
             enter(){ Tutorial.flags.moved = false; },
             focus: () => [GameUI.inventoryOpen ? tutBackpackRect() : null],
             done: () => !!Tutorial.flags.moved,
         },
         {
-            title: 'Crafting by hand',
-            text: () => GameUI.inventoryOpen ? 'The inventory has a crafting list. Craft a Workbench (4 planks) with its Craft button.'
-                                              : 'Press Tab to open your inventory, then craft a Workbench (4 planks).',
+            title: 'tut.handCraft.title',
+            text: () => T(GameUI.inventoryOpen ? 'tut.handCraft.open' : 'tut.handCraft.closed'),
             focus: () => [GameUI.inventoryOpen ? tutCraftRect() : null],
             done: () => player.inventory.countOf('workbench') > 0 || !!tutBench(),
         },
         {
-            title: 'Placing a workbench',
-            text: () => 'Hold the Workbench (hotbar keys 1-7 or the mouse wheel; drag it to the hotbar if it is in the backpack). Right-click an empty cell next to you and choose "Place Workbench".',
-            focus: () => [tutHotbarRect(), tutWheelOption(o => /^Place/.test(o.label))],
+            title: 'tut.placeBench.title',
+            text: () => T('tut.placeBench.text', { place: T('wheel.place', { item: nameOf('workbench') }) }),
+            focus: () => [tutHotbarRect(), tutWheelOption(o => o.id === 'place')],
             done: () => !!tutBench(),
         },
         {
-            title: 'Using a workbench',
+            title: 'tut.useBench.title',
             text(){
                 const pc = playerCell(), b = tutBench();
-                if(!b) return 'Place a workbench first.';
-                if(!pc || hexDist(pc, b) > 1) return 'Workbenches only open when you are next to them. Walk up to the glowing workbench.';
+                if(!b) return T('tut.placeBenchFirst');
+                if(!pc || hexDist(pc, b) > 1) return T('tut.useBench.walk');
                 const h = tutHover();
-                if(!h || h.x !== b.x || h.y !== b.y) return 'You are next to it. Now hover your mouse over the workbench.';
-                return 'Stand next to it, hover over it, and press E. (Right-click > "Open Workbench" works too.)';
+                if(!h || h.x !== b.x || h.y !== b.y) return T('tut.useBench.hover');
+                return T('tut.useBench.pressE', { open: T('wheel.open', { name: nameOf('workbench') }) });
             },
             target: () => tutBench(),
             done: () => !!GameUI.station && GameUI.station.kind === 'workbench',
         },
         {
-            title: 'Crafting at a workbench',
-            text: () => GameUI.station ? 'The workbench lists what you can make with what you carry. Craft a Canteen (3 planks): it holds water for drinking.'
-                                       : 'Open the workbench again (stand next to it, hover it, press E) and craft a Canteen.',
+            title: 'tut.benchCraft.title',
+            text: () => T(GameUI.station ? 'tut.benchCraft.open' : 'tut.benchCraft.closed'),
             enter(){ const n = player.inventory.countOf(Tutorial.planks); if(n < 3) giveItems(Tutorial.planks, 3 - n); },
             target: () => GameUI.station ? null : tutBench(),
             focus: () => [GameUI.station ? tutStationRect() : null],
             done: () => player.inventory.countOf('canteen') > 0,
         },
         {
-            title: 'Crafting sticks',
-            text: () => GameUI.inventoryOpen || GameUI.station ? 'The hand crafting list turns planks into Sticks (2 planks make 4). Tools use sticks as handles: craft sticks until you hold 5 or more.'
-                                                                : 'Tools use sticks as handles. Press Tab and craft Sticks from planks until you hold 5 or more.',
+            title: 'tut.sticks.title',
+            text: () => T(GameUI.inventoryOpen || GameUI.station ? 'tut.sticks.open' : 'tut.sticks.closed'),
             enter(){ tutEnsure('planks', 4); },
             focus: () => [GameUI.station ? tutStationRect() : GameUI.inventoryOpen ? tutCraftRect() : null],
             done: () => player.inventory.countOf('stick') >= 5,
         },
-        tutCraftStep('wooden_pickaxe', 'Crafting a pickaxe', '3 planks, 2 sticks, 2 plant fibers', [['planks', 3], ['plant_fiber', 2]]),
+        tutCraftStep('wooden_pickaxe', 'tut.pickaxe.title', 'tut.pickaxe.cost', [['planks', 3], ['plant_fiber', 2]]),
         {
-            title: 'Mining',
+            title: 'tut.mining.title',
             text(){
-                if(!Tutorial.cell) return 'Mining: hold a pickaxe and left-click stone.';
-                return tutHolding('wooden_pickaxe') ? 'Left-click the glowing stone: you walk over and mine it. Hover a block to see how long it takes. Stone drops stone, which you can craft into tools.'
-                                                    : 'Select your Wooden Pickaxe on the hotbar (keys 1-7), then left-click the glowing stone.';
+                if(!Tutorial.cell) return T('tut.mining.noCell');
+                return T(tutHolding('wooden_pickaxe') ? 'tut.mining.holding' : 'tut.mining.select');
             },
             enter(){
                 tutToHotbar('wooden_pickaxe');
@@ -7466,27 +8264,25 @@ const Tutorial = {
             done(){ const c = Tutorial.cell, b = c && blockAt(c.x, c.y); return !c || !b || b.id !== Tutorial.cellId; },
         },
         {
-            title: 'Ores and tool tiers',
+            title: 'tut.tiers.title',
             manual: true,
-            text: () => 'Ore needs a pickaxe of a high enough tier: wood is tier 1, stone tier 2, then metals. Better tiers mine faster. Tools wear out and break, so craft spares. Mining earns XP, ore the most.',
+            text: () => T('tut.tiers.text'),
             focus: () => [tutHotbarRect()],
         },
-        tutCraftStep('wooden_hoe', 'Crafting a hoe', '2 planks, 2 sticks, 2 plant fibers', [['planks', 2], ['plant_fiber', 2], ['stick', 2]]),
+        tutCraftStep('wooden_hoe', 'tut.hoe.title', 'tut.hoe.cost', [['planks', 2], ['plant_fiber', 2], ['stick', 2]]),
         {
-            title: 'Farming: tilling',
-            text: () => tutHolding('wooden_hoe') ? 'Left-click bare grass with a hoe to till it into farmland. Click the glowing cell.'
-                                                 : 'Select your Wooden Hoe on the hotbar (keys 1-7), then left-click the glowing grass to till it into farmland.',
+            title: 'tut.till.title',
+            text: () => T(tutHolding('wooden_hoe') ? 'tut.till.holding' : 'tut.till.select'),
             enter(){ tutToHotbar('wooden_hoe'); Tutorial.cell = tutGrassCell(); },
             target: () => tutFarmland() || Tutorial.cell,
             focus: () => [tutHolding('wooden_hoe') ? null : tutHotbarRect()],
             done: () => !Tutorial.cell || !!tutFarmland(),
         },
         {
-            title: 'Farming: planting',
+            title: 'tut.plant.title',
             text(){
-                const seed = heldItem() instanceof CropSeedItem;
-                if(!seed) return 'You got some seeds. Select them on the hotbar (keys 1-7), then right-click the farmland.';
-                return GameUI.wheel ? 'Choose "Plant" in the wheel. Seeds only grow on farmland.' : 'Right-click the glowing farmland and choose "Plant". Seeds only grow on farmland.';
+                if(!(heldItem() instanceof CropSeedItem)) return T('tut.plant.noSeed');
+                return T(GameUI.wheel ? 'tut.plant.wheel' : 'tut.plant.closed', { plant: T('tut.plantWord') });
             },
             enter(){
                 const id = Crops.random(c => c.farm && c.tier <= 0 && Items.has(c.seed)) ?? Crops.ids().find(i => Crops.get(i).farm && Items.has(Crops.get(i).seed));
@@ -7494,17 +8290,16 @@ const Tutorial = {
                 Tutorial.cell = tutFarmland();
             },
             target: () => tutFarmland(true) ? null : tutFarmland(),
-            focus: () => [heldItem() instanceof CropSeedItem ? tutWheelOption(o => /^Plant/.test(o.label)) : tutHotbarRect()],
+            focus: () => [heldItem() instanceof CropSeedItem ? tutWheelOption(o => o.id === 'plant') : tutHotbarRect()],
             done: () => !Tutorial.cell || !Tutorial.seed || !!tutFarmland(true),
         },
-        tutCraftStep('bucket', 'Crafting a bucket', '5 planks, 3 plant fibers', [['planks', 5], ['plant_fiber', 3]]),
+        tutCraftStep('bucket', 'tut.bucket.title', 'tut.bucket.cost', [['planks', 5], ['plant_fiber', 3]]),
         {
-            title: 'Farming: water',
+            title: 'tut.water.title',
             text(){
-                if(!Tutorial.cell) return 'Crops drink water: fill a bucket at water and pour it on the farmland.';
-                if(!tutHolding('bucket')) return 'Crops drink water, or they wither. Select your Bucket on the hotbar (keys 1-7). The glowing cell is water.';
-                return GameUI.wheel ? 'Choose "Fill bucket" in the wheel. You walk to the water first.'
-                                    : 'Right-click the glowing water cell and choose "Fill bucket". (Farmland right next to water irrigates itself, no bucket needed.)';
+                if(!Tutorial.cell) return T('tut.water.noCell');
+                if(!tutHolding('bucket')) return T('tut.water.select');
+                return T(GameUI.wheel ? 'tut.water.wheel' : 'tut.water.closed', { fill: T('tut.fillWord', { item: nameOf('bucket') }) });
             },
             enter(){
                 tutToHotbar('bucket');
@@ -7513,38 +8308,35 @@ const Tutorial = {
                 Tutorial.cell = tutWaterCell();
             },
             target: () => tutWaterBucket() ? null : Tutorial.cell,
-            focus: () => [!tutHolding('bucket') ? tutHotbarRect() : tutWheelOption(o => /^Fill/.test(o.label))],
+            focus: () => [!tutHolding('bucket') ? tutHotbarRect() : tutWheelOption(o => o.id === 'fill')],
             done: () => !Tutorial.cell || tutWaterBucket(),
         },
         {
-            title: 'Farming: pour the water',
+            title: 'tut.pour.title',
             text(){
-                if(!tutWaterBucket() && !tutHolding('bucket')) return 'Select the Bucket on the hotbar (keys 1-7).';
-                return GameUI.wheel ? 'Choose "Water farmland" in the wheel. You walk next to it first.'
-                                    : 'Right-click the glowing farmland and choose "Water farmland". Each bucket unit adds 25 of its 100 water.';
+                if(!tutWaterBucket() && !tutHolding('bucket')) return T('tut.pour.select');
+                return T(GameUI.wheel ? 'tut.pour.wheel' : 'tut.pour.closed', { water: T('tut.waterWord'), unit: FARM.bucketUnit, max: FARM.waterMax });
             },
             enter(){ Tutorial.farm = tutFarmland(true) || tutFarmland(); Tutorial.waterBase = Tutorial.farm ? blockAt(Tutorial.farm.x, Tutorial.farm.y).water : 0; tutHold('bucket'); },
             target: () => Tutorial.farm,
-            focus: () => [!tutHolding('bucket') ? tutHotbarRect() : tutWheelOption(o => /(Water|Flood) farmland/.test(o.label))],
+            focus: () => [!tutHolding('bucket') ? tutHotbarRect() : tutWheelOption(o => o.id === 'waterFarmland')],
             done(){
                 const f = Tutorial.farm, b = f && blockAt(f.x, f.y);
                 return !b || b.water > Tutorial.waterBase || b.water >= FARM.waterMax;
             },
         },
         {
-            title: 'Farming: harvest',
+            title: 'tut.harvest.title',
             manual: true,
-            text: () => 'Crops ripen after a few in-game days (the seed tooltip says how many). Harvest a ripe crop by left-clicking it with a hoe of high enough tier. You get food plus seeds to replant.',
+            text: () => T('tut.harvest.text', { slots: FARM.slots }),
             target: () => tutFarmland(true),
         },
-        tutCraftStep('wooden_sword', 'Crafting a sword', '2 planks, 1 stick, 1 flint, 2 plant fibers', [['planks', 2], ['plant_fiber', 2], ['flint', 1], ['stick', 1]]),
+        tutCraftStep('wooden_sword', 'tut.sword.title', 'tut.sword.cost', [['planks', 2], ['plant_fiber', 2], ['flint', 1], ['stick', 1]]),
         {
-            title: 'Combat',
+            title: 'tut.combat.title',
             text(){
-                const m = Tutorial.mob;
-                if(!m) return 'Combat: hold a weapon and left-click a creature.';
-                return tutHolding('wooden_sword') ? 'Left-click the glowing zombie: you walk up and swing. Melee reaches 1 cell and a sword hits harder than fists. This zombie is a harmless training dummy.'
-                                                  : 'Select your Wooden Sword on the hotbar (keys 1-7), then left-click the glowing zombie.';
+                if(!Tutorial.mob) return T('tut.combat.noMob');
+                return T(tutHolding('wooden_sword') ? 'tut.combat.holding' : 'tut.combat.select');
             },
             enter(){ tutToHotbar('wooden_sword'); Tutorial.mob = tutSpawnDummy(); },
             target: () => Tutorial.mob && Tutorial.mob.alive ? { x: Tutorial.mob.x, y: Tutorial.mob.y } : null,
@@ -7552,19 +8344,19 @@ const Tutorial = {
             done: () => !Tutorial.mob || !Tutorial.mob.alive,
         },
         {
-            title: 'Weapons and armor',
+            title: 'tut.weapons.title',
             manual: true,
-            text: () => 'Bows and crossbows shoot from several cells away but use arrows. Fists, swords and axes hit adjacent cells. Wear armor (shift-click it in the backpack) to take less damage; it wears down too.',
+            text: () => T('tut.weapons.text'),
             focus: () => [tutHotbarRect()],
         },
         {
-            title: 'Monsters and hunting',
+            title: 'tut.monsters.title',
             manual: true,
-            text: () => 'Zombies appear at night and in caves; orcs are rare and strong. Torches and lit forges keep monsters away. Animals flee and drop meat: cook it in a cooking pot, raw meat can poison you. Kills give XP.',
+            text: () => T('tut.monsters.text'),
         },
         {
-            title: 'Tutorial complete!',
-            text: () => 'You know the basics: stats, moving, the wheel, inventory, workbenches, mining, farming and combat. Ready for the real thing?',
+            title: 'tut.complete.title',
+            text: () => T('tut.complete.text'),
             done: () => false,
         },
     ],
@@ -7582,7 +8374,7 @@ const Tutorial = {
         if(this.step >= this.steps.length - 1) return;
         const s = this.current;
         if(s.manual ? !this.flags.next : !s.done()) return;   // manual steps wait for the Next button
-        if(!s.manual) notify('Done!', '#8fe39a');
+        if(!s.manual) notify(T('tut.done'), '#8fe39a');
         this.step++;
         this.begin();
     },
@@ -7646,7 +8438,7 @@ function tutPanelSpot(w, h, statsBottom){
 }
 /** The tutorial panel: left side, under the player stats (`top` = y just below them); it moves aside when another part of the HUD needs the space. */
 function drawTutorial(top = 150){
-    const T = Tutorial, s = T.current, n = T.steps.length, last = T.step === n - 1;
+    const Tu = Tutorial, s = Tu.current, n = Tu.steps.length, last = Tu.step === n - 1;   // (not `T`: that's the text function)
     // highlight what the step is about (pulsing green box, on top of the HUD)
     const k = 0.5 + 0.5 * Math.sin(performance.now() / 200);
     for(const r of (s.focus ? s.focus() : [])){
@@ -7657,25 +8449,25 @@ function drawTutorial(top = 150){
     const w = 330, h = last ? 240 : 226;
     const at = tutPanelSpot(w, h, top - 10);
     // glide to the spot (it moves when the inventory etc. opens) instead of jumping
-    const P = T.pos || (T.pos = { x: at.x, y: at.y });
+    const P = Tu.pos || (Tu.pos = { x: at.x, y: at.y });
     P.x += (at.x - P.x) * 0.25; P.y += (at.y - P.y) * 0.25;
     if(Math.abs(at.x - P.x) < 0.5) P.x = at.x;
     if(Math.abs(at.y - P.y) < 0.5) P.y = at.y;
     const x = Math.round(P.x), y = Math.round(P.y);
     panel(x, y, w, h);
     noStroke(); textAlign(LEFT, TOP);
-    fill('#8fe39a'); textSize(12); textStyle(BOLD); text(`TUTORIAL  ${T.step + 1} / ${n}`, x + 14, y + 11);
-    fill(255); textSize(19); text(s.title, x + 14, y + 28);
+    fill('#8fe39a'); textSize(12); textStyle(BOLD); text(T('tut.header', { n: Tu.step + 1, total: n }), x + 14, y + 11);
+    fill(255); textSize(19); text(T(s.title), x + 14, y + 28);
     textStyle(NORMAL); fill(230); textSize(14.5); text(s.text(), x + 14, y + 58, w - 28, 126);
     const pw = (w - 28 - (n - 1) * 3) / n;
-    for(let k = 0; k < n; k++){ fill(k < T.step ? '#8fe39a' : k === T.step ? '#ffd75e' : 'rgba(255,255,255,0.18)'); rect(x + 14 + k * (pw + 3), y + h - 10, pw, 4, 2); }
+    for(let k = 0; k < n; k++){ fill(k < Tu.step ? '#8fe39a' : k === Tu.step ? '#ffd75e' : 'rgba(255,255,255,0.18)'); rect(x + 14 + k * (pw + 3), y + h - 10, pw, 4, 2); }
     if(last){
         const bw = (w - 28 - 10) / 2;
-        button(x + 14, y + h - 52, bw, 32, 'Start a New Game', true, () => relaunch('new'), true);
-        button(x + 24 + bw, y + h - 52, bw, 32, 'Keep Exploring', true, () => { T.active = false; Mobs.repopulate(true); }, true);
+        button(x + 14, y + h - 52, bw, 32, T('menu.newGame'), true, () => relaunch('new'), true);
+        button(x + 24 + bw, y + h - 52, bw, 32, T('tut.keepExploring'), true, () => { Tu.active = false; Mobs.repopulate(true); }, true);
     } else {
-        button(x + 14, y + h - 36, 92, 20, 'Skip tutorial', true, () => relaunch(''), true);
-        if(s.manual) button(x + w - 94, y + h - 38, 80, 24, 'Next', true, () => { T.flags.next = true; }, true);
+        button(x + 14, y + h - 36, 92, 20, T('tut.skip'), true, () => relaunch(''), true);
+        if(s.manual) button(x + w - 94, y + h - 38, 80, 24, T('tut.next'), true, () => { Tu.flags.next = true; }, true);
     }
 }
 

@@ -2,6 +2,8 @@ var world;
 function setup() {
   world = new World();
   world.setDebugMode(false);   // enables the DevConsole: press ` then try /display todoList
+  // Clicking out of the browser window pauses a running game (the pause menu shows). Switching tabs doesn't.
+  world.onFocusLost = () => { const s = Scene.getActiveScene(); if(s && s.id === 'play') s.pause = true; };
   console.log(world);
 }
 

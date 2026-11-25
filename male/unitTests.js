@@ -2870,6 +2870,92 @@ const UnitTests = (function () {
         });
     }
 
+    // ---- Global.js: World language / dialog ----
+    function testLanguage() {
+        suite("World: language", () => {
+            // Runs fn with a known language setup on the active world, then restores it.
+            const sandbox = (fn) => {
+                const w = World.active;
+                const saved = { lang: w.defaults.lang, dialog: w.dialog };
+                w.defaults.lang = { user: [], system: { supported: [], default: 'english' } };
+                w.dialog = {};
+                try { return fn(w); }
+                finally { w.defaults.lang = saved.lang; w.dialog = saved.dialog; }
+            };
+
+            test("languageName turns codes into names", () =>
+                World.languageName('en-US') === 'english' && World.languageName('es') === 'spanish' &&
+                World.languageName('Japanese') === 'japanese' && World.languageName('pt_BR') === 'portuguese');
+            test("detectLanguages returns names with no repeats", () => {
+                const l = World.detectLanguages();
+                return Array.isArray(l) && new Set(l).size === l.length;
+            });
+            test("defaults.lang has the user / system shape", () => {
+                const lang = World.active.defaults.lang;
+                return Array.isArray(lang.user) && Array.isArray(lang.system.supported) && lang.system.default === 'english';
+            });
+            test("language: first supported user language, else default", () => sandbox((w) => {
+                w.defaults.lang.user = ['german', 'spanish'];
+                const none = w.language === 'english';
+                w.setSupportedLanguages('en', 'es');
+                return none && w.language === 'spanish';
+            }));
+            test("setLanguage moves a choice to the front", () => sandbox((w) => {
+                w.setSupportedLanguages('english', 'spanish', 'french');
+                w.defaults.lang.user = ['spanish', 'french'];
+                w.setLanguage('fr');
+                return w.language === 'french' && w.defaults.lang.user.join() === 'french,spanish';
+            }));
+            test("getText picks the language, falls back, fills vars", () => sandbox((w) => {
+                w.setSupportedLanguages('english', 'spanish', 'french');
+                w.addDialog('greet', { en: 'Hello, {name}!', es: '¡Hola, {name}!' });
+                w.setLanguage('spanish');
+                const es = w.getText('greet', { name: 'A' }) === '¡Hola, A!';
+                w.setLanguage('french');
+                const fallback = w.getText('greet', { name: 'A' }) === 'Hello, A!';
+                const inline = w.getText({ french: 'Salut', english: 'Hi' }) === 'Salut';
+                const missing = w.getText('no.such.key') === 'no.such.key';
+                return es && fallback && inline && missing;
+            }));
+        });
+    }
+
+    // ---- Global.js: World whenHidden / whenUnfocused ----
+    function testBackground() {
+        suite("World: background settings", () => {
+            const sandbox = (fn) => {
+                const w = World.active;
+                const saved = { h: w.whenHidden, u: w.whenUnfocused, hidden: w.hidden, lost: w.focusLost };
+                try { return fn(w); }
+                finally { w.whenHidden = saved.h; w.whenUnfocused = saved.u; w.hidden = saved.hidden; w.focusLost = saved.lost; }
+            };
+            test("settings hold 'run' or 'pause'", () => {
+                const w = World.active;
+                return ['run', 'pause'].includes(w.whenHidden) && ['run', 'pause'].includes(w.whenUnfocused);
+            });
+            test("autoPaused follows the hidden / unfocused settings", () => sandbox((w) => {
+                w.hidden = false; w.focusLost = false; w.whenHidden = 'pause'; w.whenUnfocused = 'pause';
+                const visible = w.autoPaused === false;
+                w.hidden = true;
+                const hiddenPause = w.autoPaused === true;
+                w.whenHidden = 'run';
+                const hiddenRun = w.autoPaused === false;
+                w.hidden = false; w.focusLost = true;
+                const unfocusedPause = w.autoPaused === true;
+                w.whenUnfocused = 'run';
+                return visible && hiddenPause && hiddenRun && unfocusedPause && w.autoPaused === false;
+            }));
+            test("runInBackground is an alias for whenHidden", () => sandbox((w) => {
+                w.runInBackground = false;
+                const off = w.whenHidden === 'pause';
+                w.whenHidden = 'run';
+                return off && w.runInBackground === true;
+            }));
+            test("backgroundTimer reports a known driver", () =>
+                ['worker', 'interval', 'none'].includes(World.active.backgroundTimer));
+        });
+    }
+
     // ============================================================
     // RUNNER
     // ============================================================
@@ -2915,6 +3001,8 @@ const UnitTests = (function () {
         testTileMatrix();
         testScene();
         testDevConsole();
+        testLanguage();
+        testBackground();
 
         // Aggregate into a grouped structure.
         const suites = {};
