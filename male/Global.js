@@ -1054,6 +1054,32 @@ class World {
         return bind[this.defaults.input.device];
     }
 
+    /**
+     * Define (or redefine) the default binds of a game's actions:
+     *   world.defineBinds({ jump: { keyboard: 'key@space', controller: 'button@select' }, ... }, { replace: true })
+     * Each bind is { keyboard, controller, mobile } (one input string or a list each; bare key
+     * names like 'a' mean 'key@a'). Read them with getInput('default@jump') or getBind('jump').
+     * Action names are case-insensitive in getInput, so use lower case.
+     * replace: true drops the engine's built-in example binds (left / right / up / down /
+     * interact / use) so only the game's actions are left.
+     */
+    defineBinds(map, { replace = false } = {}) {
+        if (replace) this.defaults.binds = {};
+        for (const [action, bind] of Object.entries(map || {})) {
+            const old = this.defaults.binds[action];
+            this.defaults.binds[action] = typeof bind === 'string' ? { keyboard: bind }
+                : Object.assign({}, old && typeof old === 'object' ? old : {}, bind);
+        }
+        return this;
+    }
+
+    /** Change one device's bind of an action (creating the action if needed). */
+    setBind(action, input, device = this.defaults.input.device) {
+        const b = this.defaults.binds[action] || (this.defaults.binds[action] = {});
+        b[device] = input;
+        return this;
+    }
+
 
     // ==================== LANGUAGE / DIALOG ====================
 

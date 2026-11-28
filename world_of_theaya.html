@@ -17,7 +17,8 @@
     <link rel="stylesheet" type="text/css" href="style.css">
     <title>World of Theaya v0.2.0 - MALE Engine</title>
     <!-- Every on-screen text of the game, per language (plain data; the loading screen below reads it too) -->
-    <script src="world_of_theaya_text.js?v=0.2.0" charset="utf-8"></script>
+    <script src="world_of_theaya_text.js?v=0.5.2" charset="utf-8"></script>
+    <script src="world_of_theaya_text_nl.js?v=0.5.2" charset="utf-8"></script>
   </head>
   <body>
     <!-- Loading screen: visible as soon as the page starts, shown again before a new game / tutorial reloads the page (see Loading in world_of_theaya.js) -->
@@ -36,7 +37,7 @@
         try { lang = JSON.parse(localStorage.getItem("theaya.settings") || "{}").language || null; } catch(e){}
         if(!lang){   // like world.language: the first of the browser's languages the game has
           var langs = navigator.languages || [navigator.language || ""];
-          for(var i = 0; i < langs.length && !lang; i++){ var b = String(langs[i]).toLowerCase().split("-")[0]; lang = b === "ja" ? "japanese" : b === "en" ? "english" : null; }
+          for(var i = 0; i < langs.length && !lang; i++){ var b = String(langs[i]).toLowerCase().split("-")[0]; lang = b === "ja" ? "japanese" : b === "nl" ? "dutch" : b === "en" ? "english" : null; }
         }
         lang = lang || "english";
         function tx(key, vars){ var e = THEAYA_TEXT[key] || {}, s = String(e[lang] || e.english || ""); for(var k in (vars || {})) s = s.split("{" + k + "}").join(vars[k]); return s; }
@@ -44,6 +45,7 @@
         document.getElementById("loadingTitle").textContent = tx("loading.title");
         var t = tx("loading.loading"), s = "";
         if(h === "tutorial"){ t = tx("loading.tutorial"); s = tx("loading.tutorialSub"); }
+        else if(h === "load"){ t = tx("loading.save"); }
         else if(/^seed=/.test(h)){ t = tx("loading.world"); s = tx("loading.seed", { seed: h.slice(5) }); }
         document.getElementById("loadingText").textContent = t;
         document.getElementById("loadingSub").textContent = s;
@@ -53,23 +55,25 @@
     </main>
 
     <!-- Engine core (load order matters) -->
-    <script src="male/Global.js?v=0.2.0"></script>
-    <script src="male/helperFunctions.js?v=0.2.0"></script>
-    <script src="male/inputs.js?v=0.2.0"></script>
-    <script src="male/Camera.js?v=0.2.0"></script>
-    <script src="male/item.js?v=0.2.0"></script>
-    <script src="male/objects.js?v=0.2.0"></script>
-    <script src="male/scene.js?v=0.2.0"></script>
+    <script src="male/Global.js?v=0.5.2"></script>
+    <script src="male/helperFunctions.js?v=0.5.2"></script>
+    <script src="male/inputs.js?v=0.5.2"></script>
+    <script src="male/Camera.js?v=0.5.2"></script>
+    <script src="male/item.js?v=0.5.2"></script>
+    <script src="male/objects.js?v=0.5.2"></script>
+    <script src="male/scene.js?v=0.5.2"></script>
+    <!-- Sealed .malengine data files (save games); standalone, see the top of the file -->
+    <script src="male/MALEngine_Encryption.js?v=0.5.2"></script>
 
     <!-- Debug tools: YAML reader, embedded data files, and the console -->
-    <script src="male/yaml.js?v=0.2.0"></script>
-    <script src="male/devFiles.js?v=0.2.0"></script>
-    <script src="male/devConsole.js?v=0.2.0"></script>
+    <script src="male/yaml.js?v=0.5.2"></script>
+    <script src="male/devFiles.js?v=0.5.2"></script>
+    <script src="male/devConsole.js?v=0.5.2"></script>
 
     <!-- Unit tests must come after all engine classes exist -->
-    <script src="male/unitTests.js?v=0.2.0"></script>
+    <script src="male/unitTests.js?v=0.5.2"></script>
 
     <!-- Game entry point last -->
-    <script src="world_of_theaya.js?v=0.2.0"></script>
+    <script src="world_of_theaya.js?v=0.5.2"></script>
   </body>
 </html>

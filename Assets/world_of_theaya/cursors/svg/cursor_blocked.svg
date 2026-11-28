@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="32" viewBox="0 0 32 32">
+<defs>
+<filter id="shadow" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="0.7" dy="1.1" stdDeviation="0.55" flood-color="#000000" flood-opacity="0.45"/></filter>
+<g id="body"><path d="M16 4.6 A11.4 11.4 0 1 1 15.99 4.6 Z M16 8.4 A7.6 7.6 0 1 0 16.01 8.4 Z" fill="#d8302a" fill-rule="evenodd"/>
+         <rect x="-1.9" y="-9" width="3.8" height="18" fill="#d8302a" transform="translate(16 16) rotate(-45)"/></g>
+</defs>
+<g filter="url(#shadow)">
+<use xlink:href="#body" href="#body" stroke="#2b1a0e" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<use xlink:href="#body" href="#body"/>
+</g>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M8.4 11 A9.4 9.4 0 0 1 15 6.6" stroke="#f0584a" stroke-width="1.2"/></g>
+</svg>

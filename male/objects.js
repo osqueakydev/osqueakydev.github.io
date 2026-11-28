@@ -5289,6 +5289,369 @@ class uiButton extends UI {
     }
 }
 
+// ============================================
+// UI TEXT BOX
+// ============================================
+// A one-line text field the player can type into:
+//
+//   new uiTextBox(x, y, width, height, placeholder, ...scenes)
+//   x, y          center of the box, in canvas pixels (like every UI object)
+//   placeholder   grey hint shown while it's empty (or an options object, see below)
+//
+//   const name = new uiTextBox(200, 80, 240, 32, "Your name", "menu");
+//   name.on("input",  e => console.log(e.value));     // every change
+//   name.on("submit", e => start(e.value));           // Enter
+//   name.value = "Ada";                               // set from code (no events)
+//
+// The editing is done by a hidden <input> element laid under the box, so every normal
+// text-field shortcut works: arrows, Shift+arrows (select), Ctrl+arrows (word jumps),
+// Home / End, Ctrl+A, Ctrl+C / X / V (clipboard), Ctrl+Z / Y (undo / redo),
+// Ctrl+Backspace / Delete (whole words), and IME input (Japanese, Chinese...).
+// With the mouse: click to place the caret, drag or Shift+click to select,
+// double-click selects a word, triple-click selects everything.
+//
+// While a box has focus, getInput() hides the keyboard from the game (typing "e" doesn't
+// open a menu). Enter submits, Escape and Tab leave the box, and so does clicking anywhere else.
+//
+// Drawing: a box in a scene is drawn by Scene.render like any UI object. A game that draws its
+// HUD by hand can also call box.render() itself, at the moment it wants the box on screen
+// (box.place(left, top, w, h) moves it by its top-left corner). A box that hasn't been drawn
+// for a moment counts as hidden: it loses focus and ignores the mouse.
+// Rotation isn't supported (the text and caret stay upright).
+//
+// Fields: value, placeholder, maxLength (0 = no limit), secret (draws dots, for passwords),
+//         focused (read only), enabled, format.text { font, size, style, color },
+//         format.colors { base, focus, disabled, outline, outlineFocus, placeholder, selection, caret },
+//         format.padding, format.radius
+// Methods: focus(), blur(), clear(), selectAll(), select(start, end), place(left, top, w, h)
+// Events:  input { value }, change { value } (on leaving the box, when the text changed),
+//          submit { value } (Enter), focus, blur, cancel (Escape)
+// Static:  uiTextBox.focused (the box being typed in, or null), uiTextBox.blocksInput(domain)
+//
+// Options (instead of the placeholder): { placeholder, value, maxLength, secret, format: {...},
+// onInput: fn, onSubmit: fn, ... } - nested objects are merged into the defaults.
+class uiTextBox extends UI {
+    static instances = [];
+    static focused = null;
+    static _drawSeq = 0;
+    static _drag = null;        // { box, anchor } while the mouse is selecting text
+    static _bound = false;
+    static _cursorOwner = null; // the box that set the text cursor (I-beam)
+    static HIDDEN_AFTER = 250;  // ms without being drawn = hidden
+
+    constructor(x, y, w, h, placeholder = "", ...scenes){
+        super(x, y, w, h, ...scenes);
+        this.cursorType = "text";
+        this.placeholder = "";
+        this.maxLength = 0;
+        this.secret = false;
+        this._value = "";
+        this._el = null;             // the hidden <input>, made the first time the box is focused
+        this._scroll = 0;            // px the text is scrolled left (long text)
+        this._drawnAt = -Infinity;
+        this._seq = 0;
+        this._valueAtFocus = "";
+        this._blinkStart = 0;
+        this.format.text = { font: 'sans-serif', size: 14, style: null, color: '#f0f0f0' };
+        this.format.colors = {
+            base: '#1b2029', focus: '#202734', disabled: '#2a2c31',
+            outline: 'rgba(255,255,255,0.3)', outlineFocus: '#8fe39a',
+            placeholder: 'rgba(255,255,255,0.4)', selection: 'rgba(110,160,255,0.45)', caret: '#ffffff',
+        };
+        this.format.padding = 8;
+        this.format.radius = 6;
+        if (typeof placeholder === "string") this.placeholder = placeholder;
+        else this._applyOptions(placeholder);
+        uiTextBox.instances.push(this);
+        uiTextBox._bindMouse();
+    }
+
+    // ---------- value + focus ----------
+
+    get value() { return this._el ? this._el.value : this._value; }
+    set value(v) {
+        v = v == null ? "" : String(v);
+        if (this.maxLength > 0) v = v.slice(0, this.maxLength);
+        this._value = v;
+        if (this._el) this._el.value = v;
+    }
+    get focused() { return uiTextBox.focused === this; }
+    /** Shown on screen right now (drawn within the last HIDDEN_AFTER ms, active, visible)? */
+    get shown() {
+        return !this.deleted && this.active && this.rendering.visible && performance.now() - this._drawnAt < uiTextBox.HIDDEN_AFTER;
+    }
+
+    focus() {
+        if (!this.enabled || this.deleted) return false;
+        const el = this._ensureEl();
+        if (uiTextBox.focused && uiTextBox.focused !== this) uiTextBox.focused.blur();
+        if (uiTextBox.focused !== this) {
+            uiTextBox.focused = this;
+            this._valueAtFocus = el.value;
+            this.emit("focus", { value: el.value });
+        }
+        this._placeEl();
+        if (document.activeElement !== el) el.focus({ preventScroll: true });
+        this._blinkStart = performance.now();
+        return true;
+    }
+    blur() {
+        if (uiTextBox.focused !== this) return;
+        uiTextBox.focused = null;
+        if (this._el && document.activeElement === this._el) this._el.blur();
+        if (uiTextBox._drag && uiTextBox._drag.box === this) uiTextBox._drag = null;
+        const v = this.value;
+        if (v !== this._valueAtFocus) this.emit("change", { value: v });
+        this.emit("blur", { value: v });
+    }
+    clear() { this.value = ""; this._scroll = 0; }
+    selectAll() { this.select(0, this.value.length); }
+    /** Select [start, end) (end = start puts the caret there). */
+    select(start, end = start, direction = "forward") {
+        const el = this._ensureEl(), n = el.value.length;
+        el.setSelectionRange(Math.max(0, Math.min(n, start)), Math.max(0, Math.min(n, end)), direction);
+        this._blinkStart = performance.now();
+    }
+    /** Move / resize by the top-left corner (handy for HUDs laid out from the corner). */
+    place(left, top, w = this.width, h = this.height) {
+        this.width = w; this.height = h;
+        this.x = left + w / 2; this.y = top + h / 2;
+        return this;
+    }
+
+    // ---------- the hidden <input> ----------
+
+    _ensureEl() {
+        if (this._el) return this._el;
+        const el = document.createElement("input");
+        el.type = "text";
+        el.autocomplete = "off";
+        el.spellcheck = false;
+        el.value = this._value;
+        if (this.maxLength > 0) el.maxLength = this.maxLength;
+        el.setAttribute("aria-label", this.placeholder || "text");
+        // Invisible, but still a real focused field (so the clipboard, undo and IME work), kept
+        // under the box so an IME's candidate window opens next to it.
+        Object.assign(el.style, { position: "fixed", left: "0px", top: "0px", width: "10px", height: "10px",
+            opacity: "0", pointerEvents: "none", border: "0", padding: "0", margin: "0", zIndex: "-1" });
+        // Typing must not reach the game's key handling (window listeners). keyup still passes,
+        // so a key that was held when the box got focus is released properly.
+        el.addEventListener("keydown", (e) => {
+            e.stopPropagation();
+            if (e.isComposing || e.keyCode === 229) return;   // an IME is composing: its Enter / Escape belong to it
+            if (e.key === "Enter") { e.preventDefault(); this.emit("submit", { value: el.value }); }
+            else if (e.key === "Escape") { e.preventDefault(); this.emit("cancel", { value: el.value }); this.blur(); }
+            else if (e.key === "Tab") { e.preventDefault(); this.blur(); }
+            this._blinkStart = performance.now();
+        });
+        el.addEventListener("keypress", (e) => e.stopPropagation());
+        el.addEventListener("input", () => {
+            this._value = el.value;
+            this._blinkStart = performance.now();
+            this.emit("input", { value: el.value });
+        });
+        el.addEventListener("blur", () => { if (uiTextBox.focused === this) this.blur(); });
+        document.body.appendChild(el);
+        return this._el = el;
+    }
+
+    /** Lays the hidden input over the box's spot on the page (for the IME window). */
+    _placeEl() {
+        if (!this._el) return;
+        // canvas pixels (p5's width / height) -> page pixels, in case the canvas is scaled by CSS
+        let r = { left: 0, top: 0 }, sx = 1, sy = 1;
+        try {
+            const cv = (typeof World !== "undefined" && World.canvas && World.canvas.elt) || document.querySelector("canvas");
+            if (cv) {
+                r = cv.getBoundingClientRect();
+                if (typeof width === "number" && width > 0) sx = r.width / width;
+                if (typeof height === "number" && height > 0) sy = r.height / height;
+            }
+        } catch (e) { /* ignore */ }
+        const p = this._screenTopLeft();
+        Object.assign(this._el.style, { left: (r.left + p.x * sx) + "px", top: (r.top + p.y * sy) + "px",
+            width: Math.max(10, this.width * sx) + "px", height: Math.max(10, this.height * sy) + "px",
+            fontSize: (this.format.text.size * sy) + "px" });
+    }
+
+    _screenTopLeft() {
+        let x = this.x - this.width / 2, y = this.y - this.height / 2;
+        if (this.ignoreCamera === false) { const c = UI._cameraPosition(); x -= c.x; y -= c.y; }
+        return { x, y };
+    }
+
+    // ---------- text measuring ----------
+
+    _shownText() { const v = this.value; return this.secret ? "•".repeat(v.length) : v; }
+    _useFont() {
+        const t = this.format.text;
+        textFont(t.font); textSize(t.size); textStyle(t.style || NORMAL);
+    }
+    /** x (px from the text's start) of the gap before character i. */
+    _xOf(i) {
+        push(); this._useFont();
+        const w = textWidth(this._shownText().slice(0, i));
+        pop();
+        return w;
+    }
+    /** The caret index closest to a pointer point (in the box's own space). */
+    _indexAt(p) {
+        const s = this._shownText(), left = this.x - this.width / 2 + this.format.padding - this._scroll;
+        const lx = p.x - left;
+        push(); this._useFont();
+        let best = 0, bestD = Infinity, acc = 0;
+        for (let i = 0; i <= s.length; i++) {
+            if (i > 0) acc = textWidth(s.slice(0, i));
+            const d = Math.abs(acc - lx);
+            if (d < bestD) { bestD = d; best = i; }
+            if (acc > lx) break;
+        }
+        pop();
+        return best;
+    }
+    /** [start, end) of the word around index i (letters, digits and _ ; any language). */
+    _wordAt(i) {
+        const v = this.value, isW = (c) => /[\p{L}\p{N}_]/u.test(c);
+        if (!v.length) return [0, 0];
+        let k = Math.min(i, v.length - 1);
+        if (!isW(v[k]) && k > 0 && isW(v[k - 1])) k--;
+        const w = isW(v[k]);
+        let a = k, b = k + 1;
+        while (a > 0 && isW(v[a - 1]) === w) a--;
+        while (b < v.length && isW(v[b]) === w) b++;
+        return [a, b];
+    }
+
+    // ---------- mouse ----------
+
+    /** One set of window listeners for every text box (they work whether a box is in a scene or drawn by hand). */
+    static _bindMouse() {
+        if (uiTextBox._bound || typeof window === "undefined") return;
+        uiTextBox._bound = true;
+        const pointFor = (box, e) => {
+            const p = UI.toCanvas(e.clientX, e.clientY);
+            if (box.ignoreCamera === false) { const c = UI._cameraPosition(); p.x += c.x; p.y += c.y; }
+            return p;
+        };
+        window.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            // the topmost shown box under the pointer (drawn last = on top)
+            let hit = null;
+            for (const b of uiTextBox.instances) {
+                if (!b.shown || !b.enabled || UI._consoleOwns(UI.toCanvas(e.clientX, e.clientY))) continue;
+                if (UI.contains(b, pointFor(b, e)) && (!hit || b._seq > hit._seq)) hit = b;
+            }
+            if (!hit) { if (uiTextBox.focused) uiTextBox.focused.blur(); return; }
+            e.preventDefault();   // keep the focus in the box (a click on the canvas would take it away)
+            const wasFocused = hit.focused;
+            hit.focus();
+            const i = hit._indexAt(pointFor(hit, e)), el = hit._el;
+            if (e.detail >= 3) { hit.selectAll(); return; }
+            if (e.detail === 2) { const [a, b] = hit._wordAt(i); hit.select(a, b); return; }
+            let anchor = i;
+            if (e.shiftKey && wasFocused) anchor = el.selectionDirection === "backward" ? el.selectionEnd : el.selectionStart;
+            hit.select(Math.min(anchor, i), Math.max(anchor, i), i < anchor ? "backward" : "forward");
+            uiTextBox._drag = { box: hit, anchor };
+        });
+        window.addEventListener("mousemove", (e) => {
+            const d = uiTextBox._drag;
+            if (!d) return;
+            if (!d.box.focused) { uiTextBox._drag = null; return; }
+            const i = d.box._indexAt(pointFor(d.box, e));
+            d.box.select(Math.min(d.anchor, i), Math.max(d.anchor, i), i < d.anchor ? "backward" : "forward");
+        });
+        window.addEventListener("mouseup", () => { uiTextBox._drag = null; });
+    }
+
+    /** getInput() asks this: hide the keyboard from the game while the player types in a box. */
+    static blocksInput(domain) {
+        const f = uiTextBox.focused;
+        if (!f) return false;
+        if (!f.shown) { f.blur(); return false; }   // its menu closed without blurring it
+        return domain === "key";
+    }
+
+    // ---------- per tick / drawing ----------
+
+    update(deltaTime = 1 / 60) {
+        super.update(deltaTime);
+        if (this.focused && !this.enabled) this.blur();
+    }
+
+    render() {
+        if (this.deleted || !this.active || !this.rendering.visible) return;
+        this._drawnAt = performance.now();
+        this._seq = ++uiTextBox._drawSeq;
+        if (this.focused) this._placeEl();
+        UI.renderLikeGameObject(this);
+    }
+
+    _syncRendering() {
+        const c = this.format.colors, r = this.rendering;
+        r.color = !this.enabled ? c.disabled : this.focused ? c.focus : c.base;
+        r.outline = [this.focused ? 1.5 : 1, this.focused ? c.outlineFocus : c.outline];
+        r.draw.radius = this.format.radius || 0;
+    }
+
+    draw() {
+        const c = this.format.colors, t = this.format.text, pad = this.format.padding;
+        const left = this.x - this.width / 2, top = this.y - this.height / 2, innerW = Math.max(1, this.width - pad * 2);
+        const s = this._shownText(), el = this._el, focused = this.focused;
+        push();
+        this._useFont();
+        textAlign(LEFT, CENTER);
+        rectMode(CORNER);
+        noStroke();
+        // keep the caret in view: scroll the text left / right
+        const full = textWidth(s);
+        let selA = 0, selB = 0, caret = s.length;
+        if (focused && el) {
+            selA = el.selectionStart ?? 0; selB = el.selectionEnd ?? selA;
+            caret = el.selectionDirection === "backward" ? selA : selB;
+            const cx = textWidth(s.slice(0, caret));
+            if (cx - this._scroll > innerW) this._scroll = cx - innerW;
+            if (cx - this._scroll < 0) this._scroll = cx;
+        }
+        this._scroll = Math.max(0, Math.min(this._scroll, Math.max(0, full - innerW)));
+        if (!focused && full <= innerW) this._scroll = 0;
+        // clip to the inside of the box
+        drawingContext.save();
+        drawingContext.beginPath();
+        drawingContext.rect(left + pad / 2, top, this.width - pad, this.height);
+        drawingContext.clip();
+        const tx = left + pad - this._scroll, cy = this.y + 1;
+        if (focused && selB > selA) {
+            const a = textWidth(s.slice(0, selA)), b = textWidth(s.slice(0, selB));
+            fill(c.selection);
+            rect(tx + a, top + 4, b - a, this.height - 8);
+        }
+        if (s.length) { fill(this.enabled ? t.color : c.placeholder); text(s, tx, cy); }
+        else if (this.placeholder) { fill(c.placeholder); text(this.placeholder, left + pad, cy); }
+        if (focused && selB === selA && Math.floor((performance.now() - this._blinkStart) / 530) % 2 === 0) {
+            const cx = tx + textWidth(s.slice(0, caret));
+            stroke(c.caret); strokeWeight(1.2);
+            line(cx, this.y - t.size * 0.6, cx, this.y + t.size * 0.6);
+        }
+        drawingContext.restore();
+        pop();
+        // the I-beam cursor while hovering (UI.applyCursor only knows "pointer")
+        if (typeof cursor === "function") {
+            const p = UI.pointer(this), over = this.enabled && p && UI.contains(this, p);
+            if (over && uiTextBox._cursorOwner !== this) { cursor(TEXT); uiTextBox._cursorOwner = this; }
+            else if (!over && uiTextBox._cursorOwner === this) { cursor(ARROW); uiTextBox._cursorOwner = null; if (typeof UI !== "undefined") UI._cursorSet = false; }
+        }
+    }
+
+    delete() {
+        if (this.focused) this.blur();
+        const i = uiTextBox.instances.indexOf(this);
+        if (i > -1) uiTextBox.instances.splice(i, 1);
+        if (this._el && this._el.parentNode) this._el.parentNode.removeChild(this._el);
+        this._el = null;
+        super.delete();
+    }
+}
+
 
 
 

@@ -1,21 +1,18 @@
-class testObject {
-    constructor(x,y,w,h){
-        this.x = x;
-        this.y = y;
-        this.width = w;
-        this.height = h;
-        this.rendering = new Renderer();
-    }
-}
+/*
+    I want to add the option for the user to download their current player through
+    to their device as a file (a custom file '.malengine')
+    The file data should be encypted to prevent user modification.
+    There should be a button on the pause menu to save progress labeled as "Save to Device"; pressing this should prompt the user for a file save location. 
+*/
 
-class Renderer {
-    constructor(){
-        this.color = 'white';
-        this.outline = [0.1,'black'];
-        this.shape = 'rect';
-        this.texture = null;
-        this.animations = {};
-        this.mode = 'basic';
-    }
-    
-}
+const levelData = {
+    require:[
+        'seed',
+        'player',
+        'zones.map#changes',
+        'game.date',
+        'game.time',
+        'zones.entities',
+    ]
+};
+

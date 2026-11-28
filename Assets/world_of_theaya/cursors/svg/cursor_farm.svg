@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="32" viewBox="0 0 32 32">
+<defs>
+<filter id="shadow" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="0.7" dy="1.1" stdDeviation="0.55" flood-color="#000000" flood-opacity="0.45"/></filter>
+<g id="body"><rect x="-1.8" y="0" width="3.6" height="24" rx="1.6" fill="#9b6b3d" transform="translate(11.6 4.6) rotate(-35)"/>
+         <path d="M13.2 3.4 L5.2 5.2 L2.8 13.2 L7.4 13.2 L8.6 9.4 L14 8 Z" fill="#b4bdc6"/>
+         <path d="M23.4 29 Q22.8 24.6 25.6 22.4 Q29.8 21.6 29.6 25.2 Q27.4 27.4 24.8 26.6 L24.8 29 Z" fill="#62a046"/></g>
+</defs>
+<g filter="url(#shadow)">
+<use xlink:href="#body" href="#body" stroke="#2b1a0e" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<use xlink:href="#body" href="#body"/>
+</g>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M5.8 6.6 L4 12" stroke="#eef2f5" stroke-width="1.2"/>
+         <path d="M8 8 L12.6 6.8" stroke="#8b98a6" stroke-width="0.9"/>
+         <path d="M14.4 12.6 L21.4 22.4" stroke="#c99a5e" stroke-width="1"/>
+         <path d="M24.6 28.6 Q25.6 24.8 28.4 23.4" stroke="#2f6b2a" stroke-width="0.9"/></g>
+</svg>

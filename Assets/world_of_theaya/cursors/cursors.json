@@ -1,0 +1,242 @@
+{
+    "default": {
+        "file": "cursor_default",
+        "hotspot24": [
+            2,
+            2
+        ],
+        "hotspot48": [
+            5,
+            5
+        ],
+        "hotspot32": [
+            3,
+            3
+        ],
+        "hotspot64": [
+            6,
+            6
+        ],
+        "use": "Normal pointer (menus, world)"
+    },
+    "pointer": {
+        "file": "cursor_pointer",
+        "hotspot24": [
+            9,
+            2
+        ],
+        "hotspot48": [
+            18,
+            3
+        ],
+        "hotspot32": [
+            12,
+            2
+        ],
+        "hotspot64": [
+            24,
+            4
+        ],
+        "use": "Hovering a button, item slot or anything clickable"
+    },
+    "grab": {
+        "file": "cursor_grab",
+        "hotspot24": [
+            12,
+            11
+        ],
+        "hotspot48": [
+            24,
+            21
+        ],
+        "hotspot32": [
+            16,
+            14
+        ],
+        "hotspot64": [
+            32,
+            28
+        ],
+        "use": "Dragging / holding an item stack in the inventory"
+    },
+    "mine": {
+        "file": "cursor_mine",
+        "hotspot24": [
+            3,
+            4
+        ],
+        "hotspot48": [
+            6,
+            8
+        ],
+        "hotspot32": [
+            4,
+            5
+        ],
+        "hotspot64": [
+            8,
+            10
+        ],
+        "use": "Pointing at a block the held pickaxe can mine"
+    },
+    "attack": {
+        "file": "cursor_attack",
+        "hotspot24": [
+            2,
+            2
+        ],
+        "hotspot48": [
+            5,
+            5
+        ],
+        "hotspot32": [
+            3,
+            3
+        ],
+        "hotspot64": [
+            6,
+            6
+        ],
+        "use": "Pointing at a creature you can attack (weapon held)"
+    },
+    "chop": {
+        "file": "cursor_chop",
+        "hotspot24": [
+            2,
+            6
+        ],
+        "hotspot48": [
+            5,
+            12
+        ],
+        "hotspot32": [
+            3,
+            8
+        ],
+        "hotspot64": [
+            6,
+            16
+        ],
+        "use": "Pointing at a tree / wood block (axe held)"
+    },
+    "farm": {
+        "file": "cursor_farm",
+        "hotspot24": [
+            2,
+            10
+        ],
+        "hotspot48": [
+            5,
+            20
+        ],
+        "hotspot32": [
+            3,
+            13
+        ],
+        "hotspot64": [
+            6,
+            26
+        ],
+        "use": "Pointing at ground you can till / plant (hoe or seeds held)"
+    },
+    "build": {
+        "file": "cursor_build",
+        "hotspot24": [
+            4,
+            11
+        ],
+        "hotspot48": [
+            8,
+            23
+        ],
+        "hotspot32": [
+            5,
+            15
+        ],
+        "hotspot64": [
+            10,
+            30
+        ],
+        "use": "Placing a block / building (placeable held)"
+    },
+    "aim": {
+        "file": "cursor_aim",
+        "hotspot24": [
+            12,
+            12
+        ],
+        "hotspot48": [
+            24,
+            24
+        ],
+        "hotspot32": [
+            16,
+            16
+        ],
+        "hotspot64": [
+            32,
+            32
+        ],
+        "use": "Aiming a bow / gun / thrown item"
+    },
+    "wait": {
+        "file": "cursor_wait",
+        "hotspot24": [
+            12,
+            12
+        ],
+        "hotspot48": [
+            24,
+            24
+        ],
+        "hotspot32": [
+            16,
+            16
+        ],
+        "hotspot64": [
+            32,
+            32
+        ],
+        "use": "Loading / saving / busy"
+    },
+    "blocked": {
+        "file": "cursor_blocked",
+        "hotspot24": [
+            12,
+            12
+        ],
+        "hotspot48": [
+            24,
+            24
+        ],
+        "hotspot32": [
+            16,
+            16
+        ],
+        "hotspot64": [
+            32,
+            32
+        ],
+        "use": "Not allowed (out of reach, wrong tool, full inventory)"
+    },
+    "text": {
+        "file": "cursor_text",
+        "hotspot24": [
+            12,
+            12
+        ],
+        "hotspot48": [
+            24,
+            24
+        ],
+        "hotspot32": [
+            16,
+            16
+        ],
+        "hotspot64": [
+            32,
+            32
+        ],
+        "use": "Over a text box (world name, seed, search)"
+    }
+}

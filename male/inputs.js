@@ -826,12 +826,38 @@ function _resolveControllerButtonInput(domain, control, attr) {
     return _resolvePressedHeld('controller:' + index, isPressedNow, attr, heldDuration);
 }
 
-function _resolveDefaultInput(control) {
+/**
+ * "default@<action>[:attr]": reads the action's bind from World defaults.binds.
+ * A bind is an input string, or (the usual form) { keyboard, controller, mobile }
+ * where the current device's entry (defaults.input.device) is used. An entry can
+ * be one string or a list (any of them counts). Bare key names ('a', 'space') mean
+ * 'key@<name>'. An attribute is passed on: default@jump:held -> key@space:held.
+ */
+function _bindInputs(bound, defaults) {
+    if (bound == null) return [];
+    if (typeof bound === 'object' && !Array.isArray(bound)) {
+        const device = (defaults && defaults.input && defaults.input.device) || 'keyboard';
+        bound = bound[device];
+    }
+    const list = Array.isArray(bound) ? bound : [bound];
+    return list.filter(s => typeof s === 'string' && s.length)
+               .map(s => s.indexOf('@') === -1 ? 'key@' + s : s);
+}
+function _resolveDefaultInput(control, attrRaw = null) {
     const defaults = (typeof World !== 'undefined') && (World.defaults || World.defualts);
     const binds = defaults && defaults.binds;
-    const bound = binds ? binds[control] : undefined;
-    if (typeof bound === 'string') return getInput(bound);
-    return null;
+    const inputs = _bindInputs(binds ? binds[control] : undefined, defaults);
+    if (!inputs.length) return null;
+    let result = null;
+    for (const s of inputs) {
+        // the bind's own attribute wins; otherwise the one asked for (if any)
+        const str = attrRaw === null || s.indexOf(':', s.indexOf('@')) !== -1 ? s : s + ':' + attrRaw;
+        const v = getInput(str);
+        if (v === true) return true;                       // pressed / held on any of them
+        if (typeof v === 'number' && Math.abs(v) > Math.abs(result || 0)) result = v;   // the strongest axis
+        else if (result === null && v !== null && v !== undefined) result = v;
+    }
+    return result;
 }
 
 function _controlDefaultsToPressed(domain, control) {
@@ -881,7 +907,9 @@ function getInput(str) {
     // The debug console also hides keyboard input while it's open (and
     // mouse input while the pointer is over it) so the game doesn't react
     // to typing or clicks meant for the console.
-    const _hiddenByConsole = (typeof DevConsole !== 'undefined') && DevConsole.blocksInput(domain);
+    // A focused uiTextBox (objects.js) hides the keyboard the same way while the player types.
+    const _hiddenByConsole = ((typeof DevConsole !== 'undefined') && DevConsole.blocksInput(domain))
+        || ((typeof uiTextBox !== 'undefined') && uiTextBox.blocksInput(domain));
     if ((typeof World !== 'undefined' && !World.updateTick) || _hiddenByConsole) {
         if (control === 'position') return { x: mouse.x, y: mouse.y };
         if (!attr) return null;
@@ -901,7 +929,7 @@ function getInput(str) {
         case 'bumper':
         case 'dpad':
         case 'button': return _resolveControllerButtonInput(domain, control, attr);
-        case 'default': return _resolveDefaultInput(control);
+        case 'default': return _resolveDefaultInput(control, attrRaw);
         default: return null;
     }
 }

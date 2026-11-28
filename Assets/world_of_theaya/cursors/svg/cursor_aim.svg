@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="32" viewBox="0 0 32 32">
+<defs>
+<filter id="shadow" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="0.7" dy="1.1" stdDeviation="0.55" flood-color="#000000" flood-opacity="0.45"/></filter>
+<g id="body"><path d="M16 6.6 A9.4 9.4 0 1 1 15.99 6.6 Z M16 9.4 A6.6 6.6 0 1 0 16.01 9.4 Z" fill="#f2ead2" fill-rule="evenodd"/>
+         <path d="M16 1.6 L18 7.2 L14 7.2 Z M16 30.4 L18 24.8 L14 24.8 Z M1.6 16 L7.2 14 L7.2 18 Z M30.4 16 L24.8 14 L24.8 18 Z" fill="#f2ead2"/>
+         <circle cx="16" cy="16" r="1.7" fill="#f0584a"/></g>
+</defs>
+<g filter="url(#shadow)">
+<use xlink:href="#body" href="#body" stroke="#2b1a0e" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>
+<use xlink:href="#body" href="#body"/>
+</g>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M10.4 10.6 A7.8 7.8 0 0 1 21.6 10.6" stroke="#ffffff" stroke-width="0.9" opacity="0.8"/></g>
+</svg>

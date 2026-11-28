@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="32" viewBox="0 0 32 32">
+<defs>
+<filter id="shadow" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="0.7" dy="1.1" stdDeviation="0.55" flood-color="#000000" flood-opacity="0.45"/></filter>
+<g id="body"><rect x="-1.8" y="0" width="3.6" height="25" rx="1.6" fill="#9b6b3d" transform="translate(14.4 4.4) rotate(-21)"/>
+         <path d="M14.6 5.8 L7.2 2.6 Q1.6 9.6 4.8 17.4 L15.8 12.6 Z" fill="#b4bdc6"/>
+         <rect x="14" y="4" width="4.6" height="6.6" rx="1.2" fill="#5f6a74" transform="rotate(-21 16 7)"/></g>
+</defs>
+<g filter="url(#shadow)">
+<use xlink:href="#body" href="#body" stroke="#2b1a0e" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<use xlink:href="#body" href="#body"/>
+</g>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M6.4 4.2 Q3.2 9.8 5.4 15.4" stroke="#eef2f5" stroke-width="1.3"/>
+         <path d="M9.4 6 L12.6 7.4 M9.8 12.6 L13.2 11.2" stroke="#8b98a6" stroke-width="0.9"/>
+         <path d="M18.8 14.4 L22.6 24.6" stroke="#c99a5e" stroke-width="1"/>
+         <path d="M20.6 25.6 L23.8 24.4" stroke="#6b4a2b" stroke-width="0.9"/></g>
+</svg>

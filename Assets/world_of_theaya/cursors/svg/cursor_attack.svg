@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32" height="32" viewBox="0 0 32 32">
+<defs>
+<filter id="shadow" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="0.7" dy="1.1" stdDeviation="0.55" flood-color="#000000" flood-opacity="0.45"/></filter>
+<g id="body"><path d="M3 3 L7.6 4.6 L19.8 16.6 L16.6 19.8 L4.6 7.6 Z" fill="#b4bdc6"/>
+         <rect x="-1.7" y="0" width="3.4" height="7.6" rx="1.2" fill="#6b4a2b" transform="translate(19.6 19.6) rotate(-45)"/>
+         <rect x="-6.6" y="-1.8" width="13.2" height="3.6" rx="1.6" fill="#f2c230" transform="translate(18.8 18.8) rotate(-45)"/>
+         <circle cx="26.2" cy="26.2" r="2.5" fill="#f2c230"/></g>
+</defs>
+<g filter="url(#shadow)">
+<use xlink:href="#body" href="#body" stroke="#2b1a0e" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<use xlink:href="#body" href="#body"/>
+</g>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 3.6 L7.6 4.6 L19.4 16.4" stroke="#eef2f5" stroke-width="1.1"/>
+         <path d="M6.4 6.4 L16.8 16.8" stroke="#8b98a6" stroke-width="1"/>
+         <path d="M20.8 23.4 L23.4 20.8 M22.4 25 L25 22.4" stroke="#7a5532" stroke-width="0.9"/>
+         <circle cx="18.8" cy="18.8" r="1.25" fill="#c8324d" stroke="none"/>
+         <circle cx="25.5" cy="25.5" r="0.8" fill="#fbe7a0" stroke="none"/></g>
+</svg>

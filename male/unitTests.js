@@ -1123,6 +1123,18 @@ const UnitTests = (function () {
             });
         });
 
+        suite("default@ binds", () => {
+            test("_bindInputs reads the device entry and fills in key@", () => {
+                const r = _bindInputs({ keyboard: ['q', 'mouse@left'], controller: 'button@select' }, { input: { device: 'keyboard' } });
+                return r.length === 2 && r[0] === 'key@q' && r[1] === 'mouse@left';
+            });
+            test("_bindInputs takes a plain string bind", () => {
+                const r = _bindInputs('key@e', { input: { device: 'keyboard' } });
+                return r.length === 1 && r[0] === 'key@e';
+            });
+            test("unknown action returns null", () => getInput('default@__no_such_action__') === null);
+        });
+
         suite("KeyboardStick", () => {
             test("constructs with defaults", () => {
                 const ks = new KeyboardStick();
@@ -2921,6 +2933,44 @@ const UnitTests = (function () {
     }
 
     // ---- Global.js: World whenHidden / whenUnfocused ----
+    // ---- MALEngine_Encryption.js (only on pages that load it) ----
+    function testEncryption() {
+        if (typeof MALEngine_Encryption === 'undefined') return;
+        const E = MALEngine_Encryption;
+        const hex = b => Array.from(b, v => v.toString(16).padStart(2, '0')).join('');
+        const codeOf = fn => { try { fn(); return 'ok'; } catch (e) { return e.code || e.message; } };
+        suite("MALEngine_Encryption: building blocks", () => {
+            test("SHA-256 test vectors", () =>
+                hex(E.sha256('abc')) === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' &&
+                hex(E.sha256('')) === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+            test("HMAC-SHA-256 (RFC 4231 #2)", () =>
+                hex(E.hmacSha256('Jefe', 'what do ya want for nothing?')) === '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843');
+            test("ChaCha20 (RFC 8439 A.1 #1)", () =>
+                hex(E.chacha20(new Uint8Array(32), new Uint8Array(12), 0, new Uint8Array(16))) === '76b8e0ada0f13d90405d6ae55386bd28');
+            test("compress / decompress round trip", () => {
+                const d = E.utf8.encode('grass,'.repeat(500) + 'oak_tree');
+                const z = E.compress(d), back = E.decompress(z, d.length);
+                return z.length < d.length / 10 && hex(back) === hex(d);
+            });
+        });
+        suite("MALEngine_Encryption: files", () => {
+            const opts = { key: 'unit test key', type: 'unit.test' };
+            const data = { level: 3, name: 'héllo 日本', list: [1, null, true], big: 'x'.repeat(2000) };
+            const file = E.encode(data, opts);
+            test("encode -> decode gives the data back", () => JSON.stringify(E.decode(file, opts)) === JSON.stringify(data));
+            test("info() reads the header without the key", () => { const i = E.info(file); return i.type === 'unit.test' && i.version === 1 && i.compressed; });
+            test("every edited byte is refused", () => {
+                for (let i = 0; i < file.length; i += 7) { const m = file.slice(); m[i] ^= 1; if (codeOf(() => E.decode(m, opts)) === 'ok') return false; }
+                return true;
+            });
+            test("a cut-short file is refused", () => codeOf(() => E.decode(file.subarray(0, file.length - 1), opts)) !== 'ok');
+            test("the wrong key -> 'tampered'", () => codeOf(() => E.decode(file, { key: 'other', type: 'unit.test' })) === 'tampered');
+            test("another type -> 'wrong_type'", () => codeOf(() => E.decode(file, { key: 'unit test key', type: 'other' })) === 'wrong_type');
+            test("not a .malengine file -> 'not_malengine'", () => codeOf(() => E.decode(E.utf8.encode('{"level":99}'), opts)) === 'not_malengine');
+            test("verify() and base64", () => E.verify(E.fromBase64(E.toBase64(file)), opts) && !E.verify(file, { key: 'x', type: 'unit.test' }));
+        });
+    }
+
     function testBackground() {
         suite("World: background settings", () => {
             const sandbox = (fn) => {
@@ -3003,6 +3053,7 @@ const UnitTests = (function () {
         testDevConsole();
         testLanguage();
         testBackground();
+        testEncryption();
 
         // Aggregate into a grouped structure.
         const suites = {};
